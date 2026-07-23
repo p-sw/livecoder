@@ -35,7 +35,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { agentStatus, browse, listEntries, openWorkspace, readFile, saveFile, streamAgentMessage, API_ROOT, type AgentEvent, type FileEntry, type WorkspaceResult } from './api';
+import { agentStatus, browse, listEntries, openWorkspace, readFile, saveFile, streamAgentMessage, API_ROOT, type AdapterInfo, type AgentEvent, type FileEntry, type WorkspaceResult } from './api';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -80,6 +80,8 @@ export default function App() {
   const [agentConnection, setAgentConnection] = useState<AgentConnection>('idle');
   const [agentConfigured, setAgentConfigured] = useState<boolean | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
+  const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
+  const [activeAdapter, setActiveAdapter] = useState<string | null>(null);
   const fileRequest = useRef(0);
   const selectedRef = useRef<FileEntry | null>(null);
   const dirtyRef = useRef(false);
@@ -223,6 +225,8 @@ export default function App() {
       .then((result) => {
         setAgentConfigured(result.configured);
         setAgentConnection(result.configured ? 'ready' : 'idle');
+        setAdapters(result.adapters);
+        setActiveAdapter(result.adapter);
       })
       .catch(() => setAgentConfigured(false));
   }, [workspace]);
@@ -277,10 +281,9 @@ export default function App() {
         setChatMessages((current) => current.map((message) => message.id === assistantId ? { ...message, streaming: false } : message));
       }
     };
-
     try {
       const context = selectedFile ? `\n\nThe user is currently viewing ${relativePath(selectedFile.path, workspace.path)}.` : '';
-      await streamAgentMessage(workspace.path, `${text}${context}`, handleEvent);
+      await streamAgentMessage(workspace.path, `${text}${context}`, handleEvent, activeAdapter ?? undefined);
     } catch (error) {
       updateAssistant(`Unable to reach Pi ACP. ${error instanceof Error ? error.message : String(error)}`);
       setAgentConnection('error');
@@ -288,8 +291,7 @@ export default function App() {
       setChatMessages((current) => current.map((message) => message.id === assistantId ? { ...message, streaming: false } : message));
       setAgentBusy(false);
     }
-  }, [agentBusy, chatInput, selectedFile, workspace]);
-
+  }, [agentBusy, chatInput, selectedFile, workspace, activeAdapter]);
   const visibleEntries = useMemo(() => {
     if (!workspace) return [];
     const rootEntries = entries[workspace.path] ?? [];
@@ -346,6 +348,9 @@ export default function App() {
           busy={agentBusy}
           connection={agentConnection}
           configured={agentConfigured}
+          adapters={adapters}
+          activeAdapter={activeAdapter}
+          onSelectAdapter={setActiveAdapter}
           onInput={setChatInput}
           onSend={() => void sendChat()}
           onSuggestion={(value) => void sendChat(value)}
@@ -683,6 +688,9 @@ function AgentPanel({
   busy,
   connection,
   configured,
+  adapters,
+  activeAdapter,
+  onSelectAdapter,
   onInput,
   onSend,
   onSuggestion,
@@ -694,6 +702,9 @@ function AgentPanel({
   busy: boolean;
   connection: AgentConnection;
   configured: boolean | null;
+  adapters: AdapterInfo[];
+  activeAdapter: string | null;
+  onSelectAdapter: (id: string) => void;
   onInput: (value: string) => void;
   onSend: () => void;
   onSuggestion: (value: string) => void;
@@ -716,6 +727,7 @@ function AgentPanel({
     <aside className="panel agent-panel">
       <div className="agent-header"><div className="agent-title"><Button variant="ghost" size="icon" className="mobile-back" onClick={onBack} aria-label="Back to explorer"><ArrowLeft size={17} /></Button><div className="agent-avatar"><Bot size={17} /></div><div><div className="panel-kicker">PI / ACP</div><h2>Pi agent</h2></div></div><div className={cn('agent-status', (connection === 'error' || connection === 'idle') && 'agent-status-muted', connection === 'error' && 'agent-status-error')}><span className={cn('status-dot', connection === 'thinking' && 'status-dot-pulse')} />{statusLabel}</div></div>
       <div className="agent-context"><div className="context-icon"><Zap size={14} /></div><div><span className="context-label">WORKING IN</span><strong title={workspace.path}>{workspace.name}</strong></div></div>
+      <AdapterPicker adapters={adapters} active={activeAdapter} onSelect={onSelectAdapter} />
       <ScrollArea className="chat-scroll" ref={messagesRef}>
         <div className="chat-messages" aria-live="polite">
           {configured === false && <div className="agent-setup-note"><Terminal size={15} /><div><strong>Pi ACP will start on first message.</strong><span>Make sure <code>pi</code> and a model provider are configured on this machine.</span></div></div>}
@@ -729,6 +741,36 @@ function AgentPanel({
         <div className="compose-hint"><span>Pi can read and edit files in this workspace</span><span><kbd>↵</kbd> send</span></div>
       </div>
     </aside>
+  );
+}
+
+// ponytail: a single chip row, not a dropdown — adapters are a small fixed set
+// and a segmented control communicates availability at a glance. Missing
+// binaries render as muted but still clickable (the backend returns an error
+// on chat), so the user knows what's installed without poking around.
+function AdapterPicker({ adapters, active, onSelect }: {
+  adapters: AdapterInfo[];
+  active: string | null;
+  onSelect: (id: string) => void;
+}) {
+  if (adapters.length <= 1) return null;
+  return (
+    <div className="adapter-picker" role="tablist" aria-label="Adapter">
+      {adapters.map((adapter) => (
+        <button
+          key={adapter.id}
+          type="button"
+          role="tab"
+          aria-selected={adapter.id === active}
+          className={cn('adapter-chip', adapter.id === active && 'adapter-chip-active', !adapter.installed && 'adapter-chip-missing')}
+          onClick={() => onSelect(adapter.id)}
+          title={adapter.installed ? `Use ${adapter.label}` : `${adapter.label} is not installed`}
+        >
+          {adapter.label}
+          {!adapter.installed && <span className="adapter-chip-dot" aria-hidden="true" />}
+        </button>
+      ))}
+    </div>
   );
 }
 

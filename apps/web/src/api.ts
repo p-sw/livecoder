@@ -78,8 +78,24 @@ export function saveFile(path: string, content: string, workspace: string) {
   });
 }
 
-export function agentStatus() {
-  return request<{ configured: boolean; sessions: number; adapter: string }>('/api/agent/status');
+export interface AdapterInfo {
+  id: string;
+  label: string;
+  installed: boolean;
+  active: boolean;
+}
+
+export interface AgentStatus {
+  configured: boolean;
+  sessions: number;
+  adapter: string;
+  defaultAdapter: string;
+  adapters: AdapterInfo[];
+}
+
+export function agentStatus(adapter?: string) {
+  const query = adapter ? `?adapter=${encodeURIComponent(adapter)}` : '';
+  return request<AgentStatus>(`/api/agent/status${query}`);
 }
 
 export type AgentEvent =
@@ -94,8 +110,10 @@ export async function streamAgentMessage(
   workspace: string,
   text: string,
   onEvent: (event: AgentEvent) => void,
+  adapter?: string,
 ): Promise<void> {
-  const response = await fetch(`${API_ROOT}/api/agent/message`, {
+  const query = adapter ? `?adapter=${encodeURIComponent(adapter)}` : '';
+  const response = await fetch(`${API_ROOT}/api/agent/message${query}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify({ workspace, text }),

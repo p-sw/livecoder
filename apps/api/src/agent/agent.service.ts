@@ -1,10 +1,16 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import * as acp from '@agentclientprotocol/sdk';
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, promises as fs } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { promises as fs } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
+import {
+  adapterInstalled,
+  defaultAdapterId,
+  listAdapters,
+  resolveAdapter,
+  resolveAdapterCommand,
+  type AdapterSpec,
+} from './adapter-registry.js';
 
 export type AgentEvent =
   | { type: 'status'; status: 'connecting' | 'ready' | 'thinking' | 'complete'; message?: string }
@@ -20,33 +26,72 @@ type QueueItem =
   | { kind: 'stop'; value: acp.PromptResponse }
   | { kind: 'error'; value: unknown };
 
+export interface AdapterDescriptor {
+  id: string;
+  label: string;
+  installed: boolean;
+  active: boolean;
+}
+
+export interface AgentStatus {
+  configured: boolean;
+  sessions: number;
+  adapter: string;
+  defaultAdapter: string;
+  adapters: AdapterDescriptor[];
+}
+
 @Injectable()
 export class AgentService implements OnModuleDestroy {
+  // ponytail: one session per (adapter, workspace) pair. Switching adapters
+  // mid-session is supported because the workspace key stays stable and
+  // each adapter holds its own long-lived AcpSession.
   private readonly sessions = new Map<string, Promise<AcpSession>>();
 
-  async prompt(workspace: string, text: string, emit: Emit): Promise<void> {
-    let sessionPromise = this.sessions.get(workspace);
+  async prompt(workspace: string, text: string, emit: Emit, adapterId?: string): Promise<void> {
+    const adapter = this.resolveAdapter(adapterId);
+    const key = `${adapter.id}::${workspace}`;
+    let sessionPromise = this.sessions.get(key);
     if (!sessionPromise) {
-      sessionPromise = AcpSession.start(workspace, emit);
-      this.sessions.set(workspace, sessionPromise);
-      sessionPromise.catch(() => this.sessions.delete(workspace));
+      sessionPromise = AcpSession.start(workspace, emit, adapter);
+      this.sessions.set(key, sessionPromise);
+      sessionPromise.catch(() => this.sessions.delete(key));
     }
     const session = await sessionPromise;
     try {
       await session.prompt(text, emit);
     } catch (error) {
-      if (this.sessions.get(workspace) === sessionPromise) this.sessions.delete(workspace);
+      if (this.sessions.get(key) === sessionPromise) this.sessions.delete(key);
       void session.close().catch(() => undefined);
       throw error;
     }
   }
 
-  status() {
+  status(adapterId?: string): AgentStatus {
+    const adapter = this.resolveAdapter(adapterId);
+    const installed = adapterInstalled(adapter);
     return {
-      configured: Boolean(process.env.PI_ACP_COMMAND || adapterAvailable()),
+      configured: installed,
       sessions: this.sessions.size,
-      adapter: process.env.PI_ACP_COMMAND || 'pi-acp',
+      adapter: adapter.id,
+      defaultAdapter: defaultAdapterId(),
+      adapters: listAdapters().map((spec) => ({
+        id: spec.id,
+        label: spec.label,
+        installed: adapterInstalled(spec),
+        active: spec.id === adapter.id,
+      })),
     };
+  }
+
+  private resolveAdapter(adapterId?: string): AdapterSpec {
+    const resolved = resolveAdapter(adapterId ?? '');
+    // ponytail: requested adapter missing → fall back to default. The chat
+    // endpoint surfaces a friendly error if even the default is missing.
+    if (resolved) return resolved;
+    const fallback = resolveAdapter(defaultAdapterId());
+    if (fallback) return fallback;
+    return { id: 'pi', label: 'Pi', command: 'pi-acp', args: [] };
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -67,9 +112,9 @@ class AcpSession {
     private readonly updates: AsyncQueue<QueueItem>,
   ) {}
 
-  static async start(cwd: string, emit: Emit): Promise<AcpSession> {
-    emit({ type: 'status', status: 'connecting', message: 'Starting Pi ACP…' });
-    const { command, args } = adapterCommand();
+  static async start(cwd: string, emit: Emit, adapter: AdapterSpec): Promise<AcpSession> {
+    emit({ type: 'status', status: 'connecting', message: `Starting ${adapter.label}…` });
+    const { command, args } = resolveAdapterCommand(adapter);
     const child = spawn(command, args, {
       cwd,
       env: { ...process.env, FORCE_COLOR: '0' },
@@ -113,7 +158,7 @@ class AcpSession {
     );
     const connection = new acp.ClientSideConnection(() => client, stream);
     void connection.closed.then(() => {
-      updates.push({ kind: 'error', value: new Error('Pi ACP connection closed') });
+      updates.push({ kind: 'error', value: new Error(`${adapter.label} connection closed`) });
     });
 
     try {
@@ -123,13 +168,13 @@ class AcpSession {
         clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
       });
       const session = await connection.newSession({ cwd, mcpServers: [] });
-      emit({ type: 'status', status: 'ready', message: 'Pi is ready' });
+      emit({ type: 'status', status: 'ready', message: `${adapter.label} is ready` });
       return new AcpSession(child, connection, session.sessionId, updates);
     } catch (error) {
       child.kill();
       const detail = error instanceof Error ? error.message : String(error);
       const suffix = stderr.trim() ? ` — ${stderr.trim().split('\n').at(-1)}` : '';
-      throw new Error(`Could not start Pi ACP: ${detail}${suffix}`);
+      throw new Error(`Could not start ${adapter.label}: ${detail}${suffix}`);
     }
   }
 
@@ -203,61 +248,17 @@ function mapUpdate(update: acp.SessionUpdate): AgentEvent | null {
   }
 }
 
-function adapterCommand(): { command: string; args: string[] } {
-  if (process.env.PI_ACP_COMMAND) {
-    let args: string[] = [];
-    try {
-      const parsed: unknown = JSON.parse(process.env.PI_ACP_ARGS ?? '[]');
-      if (Array.isArray(parsed)) args = parsed.filter((item): item is string => typeof item === 'string');
-    } catch {
-      // Use no extra arguments when the optional value is malformed.
-    }
-    return { command: process.env.PI_ACP_COMMAND, args };
-  }
-  if (commandAvailable('pi-acp')) return { command: 'pi-acp', args: [] };
-  const local = localAdapterPath();
-  if (local) return { command: local, args: [] };
-  return {
-    command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
-    args: ['--yes', 'pi-acp'],
-  };
-}
-
-function adapterAvailable(): boolean {
-  return Boolean(localAdapterPath() || commandAvailable('pi-acp') || commandAvailable('npx'));
-}
-
-function localAdapterPath(): string | null {
-  const binary = process.platform === 'win32' ? 'pi-acp.cmd' : 'pi-acp';
-  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(process.cwd(), 'node_modules', '.bin', binary),
-    join(process.cwd(), '..', '..', 'node_modules', '.bin', binary),
-    join(moduleDirectory, '..', '..', '..', '..', 'node_modules', '.bin', binary),
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
-}
-
-function commandAvailable(command: string): boolean {
-  try {
-    execFileSync(process.platform === 'win32' ? 'where' : 'which', [command], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function waitForSpawn(child: ChildProcessWithoutNullStreams): Promise<void> {
-  return new Promise((resolveSpawn, reject) => {
-    const onSpawn = () => { cleanup(); resolveSpawn(); };
-    const onError = (error: Error) => { cleanup(); reject(error); };
-    const cleanup = () => {
-      child.off('spawn', onSpawn);
-      child.off('error', onError);
-    };
-    child.once('spawn', onSpawn);
-    child.once('error', onError);
-  });
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const onSpawn = () => { cleanup(); resolve(); };
+  const onError = (error: Error) => { cleanup(); reject(error); };
+  const cleanup = () => {
+    child.off('spawn', onSpawn);
+    child.off('error', onError);
+  };
+  child.once('spawn', onSpawn);
+  child.once('error', onError);
+  return promise;
 }
 
 class AsyncQueue<T> {
