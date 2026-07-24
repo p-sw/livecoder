@@ -9,6 +9,7 @@ import {
   GitBranch,
   MessageSquare,
   PanelLeft,
+  Settings as SettingsIcon,
 } from 'lucide-react';
 import type { WorkspaceResult } from './api';
 import { Badge } from './components/ui/badge';
@@ -78,7 +79,6 @@ function TopBar({ workspace, onOpen }: { workspace: WorkspaceResult | null; onOp
 
 // ponytail: mobile nav uses router <Link> rather than local state. The current
 // route is tracked via useRouterState so the active tab lights up without
-// duplicating route state in React.
 function MobileNav() {
   const { workspace } = useWorkspaceStore();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -88,20 +88,27 @@ function MobileNav() {
     { to: '/editor', label: 'Editor', icon: Code2 },
     { to: '/agent', label: 'Agent', icon: MessageSquare },
     { to: '/git', label: 'Git', icon: GitBranch },
+    { to: '/settings', label: 'Settings', icon: SettingsIcon },
   ];
 
   return (
     <nav className="mobile-nav">
-      {tabs.map((tab) => (
-        <Link
-          key={tab.to}
-          to={tab.to}
-          disabled={!workspace}
-          className={pathname === tab.to ? 'active' : undefined}
-        >
-          <tab.icon size={18} /><span>{tab.label}</span>
-        </Link>
-      ))}
+      {tabs.map((tab) => {
+        // ponytail: Settings stays reachable even without an open workspace
+        // so the user can fix a misconfigured path without first opening a
+        // folder. The other tabs need a workspace to do anything useful.
+        const locked = tab.to !== '/settings' && !workspace;
+        return (
+          <Link
+            key={tab.to}
+            to={tab.to}
+            disabled={locked}
+            className={pathname === tab.to ? 'active' : undefined}
+          >
+            <tab.icon size={18} /><span>{tab.label}</span>
+          </Link>
+        );
+      })}
     </nav>
   );
 }

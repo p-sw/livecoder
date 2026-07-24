@@ -6,6 +6,7 @@ import { Readable, Writable } from 'node:stream';
 import {
   adapterInstalled,
   defaultAdapterId,
+  defaultAdapterSource,
   listAdapters,
   resolveAdapter,
   resolveAdapterCommand,
@@ -38,6 +39,7 @@ export interface AgentStatus {
   sessions: number;
   adapter: string;
   defaultAdapter: string;
+  defaultAdapterSource: 'settings' | 'env' | 'builtin';
   adapters: AdapterDescriptor[];
 }
 
@@ -75,6 +77,7 @@ export class AgentService implements OnModuleDestroy {
       sessions: this.sessions.size,
       adapter: adapter.id,
       defaultAdapter: defaultAdapterId(),
+      defaultAdapterSource: defaultAdapterSource(),
       adapters: listAdapters().map((spec) => ({
         id: spec.id,
         label: spec.label,

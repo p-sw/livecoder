@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getSettings } from '../settings/settings-store.js';
 
 export interface AdapterSpec {
   /** stable id used over the wire (e.g. "pi", "oh-my-pi") */
@@ -77,10 +78,31 @@ export function findAdapter(id: string): AdapterSpec | null {
   return listAdapters().find((spec) => spec.id === id) ?? null;
 }
 
+// ponytail: priority order — settings.json override > env var > built-in
+// 'pi'. The settings controller writes to a separate file (not .env) and
+// is consulted at lookup time so changing the default takes effect without
+// a process restart.
 export function defaultAdapterId(): string {
+  const override = getSettings().defaultAdapterId;
+  if (override) return override;
   return process.env.PI_ADAPTER_DEFAULT ?? 'pi';
 }
 
+export type DefaultSource = 'settings' | 'env' | 'builtin';
+
+export function defaultAdapterSource(): DefaultSource {
+  const override = getSettings().defaultAdapterId;
+  if (override) return 'settings';
+  if (process.env.PI_ADAPTER_DEFAULT) return 'env';
+  return 'builtin';
+}
+
+export function resolveCloneSource(): DefaultSource {
+  const override = getSettings().cloneBasePath;
+  if (override) return 'settings';
+  if (process.env.BASE_CLONE_PATH) return 'env';
+  return 'builtin';
+}
 // ponytail: legacy `PI_ACP_COMMAND` / `PI_ACP_ARGS` overrides still take
 // precedence over the registry so existing deployments keep working.
 function legacyOverride(): AdapterSpec | null {

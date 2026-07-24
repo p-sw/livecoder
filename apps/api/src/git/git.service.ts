@@ -16,6 +16,7 @@ import {
   resolveClonePath,
   runGit,
 } from './git-runner.js';
+import { getSettings } from '../settings/settings-store.js';
 
 export interface RemoteInfo {
   name: string;
@@ -100,7 +101,9 @@ export class GitService {
     return { path: target, parent, inferred: !path };
   }
 
-  clonePathSuggestion(name: string): { parent: string; source: 'env' | 'history' | 'home' | 'requested' | 'unnamed' } {
+  clonePathSuggestion(name: string): { parent: string; source: 'settings' | 'env' | 'history' | 'home' | 'requested' | 'unnamed' } {
+    const override = getSettings().cloneBasePath;
+    if (override) return { parent: override, source: 'settings' };
     if (process.env.BASE_CLONE_PATH) return { parent: process.env.BASE_CLONE_PATH, source: 'env' };
     const last = recallCloneParent();
     if (last) return { parent: last, source: 'history' };

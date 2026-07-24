@@ -90,6 +90,7 @@ export interface AgentStatus {
   sessions: number;
   adapter: string;
   defaultAdapter: string;
+  defaultAdapterSource: 'settings' | 'env' | 'builtin';
   adapters: AdapterInfo[];
 }
 
@@ -228,4 +229,28 @@ export const git = {
     request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/remotes/${encodeURIComponent(name)}?workspace=${encodeURIComponent(workspace)}`, { method: 'DELETE' }),
   setRemoteUrl: (workspace: string, name: string, url: string) =>
     request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/remotes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ workspace, url }) }),
+};
+
+// ---------- Settings API ----------
+
+export type SettingsValue = string | null;
+
+export interface Settings {
+  cloneBasePath: SettingsValue;
+  defaultAdapterId: SettingsValue;
+}
+
+export interface SettingsResponse {
+  settings: Settings;
+  defaults: Settings;
+  path: string;
+}
+
+export const settings = {
+  get: () => request<SettingsResponse>('/api/settings'),
+  update: (body: Partial<Settings>) =>
+    request<{ settings: Settings }>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 };

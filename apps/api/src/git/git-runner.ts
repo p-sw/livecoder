@@ -1,11 +1,7 @@
-// ponytail: every git operation starts a fresh `git` subprocess with the
-// requested cwd. No persistent git library, no daemon — straight argv.
-// Capturing stdout/stderr separately lets the controller surface partial
-// output (e.g. fetch progress) while still returning a structured error.
-
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { dirname, resolve as resolvePath } from 'node:path';
+import { getSettings } from '../settings/settings-store.js';
 import { homedir } from 'node:os';
-import { resolve as resolvePath, dirname } from 'node:path';
 
 export interface GitResult {
   stdout: string;
@@ -80,9 +76,15 @@ export function resolveClonePath(name: string, requested?: string): string {
   // frontend picker (clone dialog) can override the default.
   if (requested && requested.trim()) return resolvePath(requested.trim());
 
-  const base = process.env.BASE_CLONE_PATH
-    ? resolvePath(process.env.BASE_CLONE_PATH)
-    : null;
+  // ponytail: priority order — settings.json override > env var > recent
+  // clone parent > home directory. The override is loaded from the api's
+  // settings store; no need for the git module to import node:fs.
+  const override = getSettings().cloneBasePath;
+  const base = override
+    ? resolvePath(override)
+    : process.env.BASE_CLONE_PATH
+      ? resolvePath(process.env.BASE_CLONE_PATH)
+      : null;
   const fallback = recallCloneParent() ? dirname(recallCloneParent()!) : null;
   const home = homedir();
 

@@ -7,6 +7,7 @@ import { AgentController } from './agent/agent.controller.js';
 import { AgentService } from './agent/agent.service.js';
 import { GitController } from './git/git.controller.js';
 import { GitService } from './git/git.service.js';
+import { SettingsController } from './settings/settings.controller.js';
 import { WorkspaceController } from './workspace/workspace.controller.js';
 import { WorkspaceService } from './workspace/workspace.service.js';
 
@@ -19,7 +20,7 @@ const apiDirectory = dirname(fileURLToPath(import.meta.url));
       exclude: ['/api/{*splat}'],
     }),
   ],
-  controllers: [AppController, WorkspaceController, AgentController, GitController],
+  controllers: [AppController, WorkspaceController, AgentController, GitController, SettingsController],
   providers: [WorkspaceService, AgentService, GitService],
 })
 export class AppModule {}
