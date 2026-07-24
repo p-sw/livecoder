@@ -5,7 +5,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { bracketMatching, indentOnInput, foldGutter, foldKeymap } from '@codemirror/language';
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
-import { lintKeymap } from '@codemirror/lint';
+import { lintGutter, lintKeymap, setDiagnosticsEffect, forEachDiagnostic } from '@codemirror/lint';
 import { detectLanguage, type LanguageMatch } from '../lib/languages';
 import { editorTheme, editorHighlight } from '../lib/editorTheme';
 
@@ -16,9 +16,14 @@ interface CodeEditorProps {
   onChange: (value: string) => void;
   onSave?: () => void;
   extraExtensions?: Extension[];
+  // ponytail: surfaces the CM view to the parent for mobile-only affordances
+  // (diagnostics toggle, jump-to) that the editor chrome can't otherwise reach.
+  onMount?: (view: EditorView) => void;
+  // ponytail: fires with the current diagnostic count so the parent can
+  // render a live badge without polling.
+  onDiagnosticsChange?: (count: number) => void;
 }
-
-export function CodeEditor({ value, filename, reportedLanguage, onChange, onSave, extraExtensions }: CodeEditorProps) {
+export function CodeEditor({ value, filename, reportedLanguage, onChange, onSave, extraExtensions, onMount, onDiagnosticsChange }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const languageCompartment = useRef(new Compartment());
@@ -28,8 +33,12 @@ export function CodeEditor({ value, filename, reportedLanguage, onChange, onSave
   // values without re-creating the editor on every keystroke (CM6 owns state).
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
+  const onMountRef = useRef(onMount);
+  const onDiagnosticsChangeRef = useRef(onDiagnosticsChange);
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
+  onMountRef.current = onMount;
+  onDiagnosticsChangeRef.current = onDiagnosticsChange;
 
   // Build the editor once; subsequent updates swap language / value in place.
   useEffect(() => {
@@ -40,6 +49,7 @@ export function CodeEditor({ value, filename, reportedLanguage, onChange, onSave
       doc: value,
       extensions: [
         lineNumbers(),
+        lintGutter(),
         foldGutter(),
         history(),
         drawSelection(),
@@ -70,12 +80,17 @@ export function CodeEditor({ value, filename, reportedLanguage, onChange, onSave
         extraCompartment.current.of(extraExtensions ?? []),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
+          if (onDiagnosticsChangeRef.current && update.transactions.some((tr) => tr.effects.some((e) => e.is(setDiagnosticsEffect)))) {
+            let count = 0;
+            forEachDiagnostic(update.state, () => count++);
+            onDiagnosticsChangeRef.current(count);
+          }
         }),
       ],
     });
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
-
+    onMountRef.current?.(view);
     return () => {
       view.destroy();
       viewRef.current = null;
@@ -110,5 +125,5 @@ export function CodeEditor({ value, filename, reportedLanguage, onChange, onSave
     view.dispatch({ effects: extraCompartment.current.reconfigure(extraExtensions ?? []) });
   }, [extraExtensions]);
 
-  return <div ref={hostRef} className="cm-host" />;
+  return <div ref={hostRef} className="cm-host h-full min-h-0 overflow-hidden" />;
 }

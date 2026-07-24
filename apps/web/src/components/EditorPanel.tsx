@@ -3,13 +3,16 @@
 // unchanged — it has its own scoped CSS that ships with the editor.
 import { useLspExtension } from '../lib/lsp';
 import { fileLanguage } from '../lib/utils';
-import { useMemo } from 'react';
+import { useMemo, useRef, useState, useCallback } from 'react';
+import type { EditorView } from '@codemirror/view';
+import { openLintPanel, closeLintPanel } from '@codemirror/lint';
 import { useNavigate } from '@tanstack/react-router';
-import { AlertCircle, ArrowLeft, Braces, Check, Code2, Loader2, RefreshCw, Save } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Braces, Check, Code2, Loader2, MessageSquareWarning, RefreshCw, Save } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { CodeEditor } from './CodeEditor';
 import { useWorkspaceStore } from '../workspace-context';
+import { routeWithWorkspace } from '../router';
 
 export function EditorPanel() {
   const store = useWorkspaceStore();
@@ -17,18 +20,48 @@ export function EditorPanel() {
   const { workspace, selectedFile, fileContent, fileLoading, fileDirty, saveState } = store;
   const lspExtension = useLspExtension(selectedFile, workspace?.path ?? '');
   const lineCount = useMemo(() => Math.max(1, fileContent.split('\n').length), [fileContent]);
+  // ponytail: mobile can't hover the gutter or use Ctrl-Shift-M, so the
+  // parent keeps a handle to the view and a live diagnostic count to drive
+  // a touch-friendly Problems toggle.
+  const viewRef = useRef<EditorView | null>(null);
+  const [diagnosticCount, setDiagnosticCount] = useState(0);
+  const toggleProblems = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    // ponytail: read live panel state from the DOM — the lint panel isn't
+    // exposed as a public field, so DOM presence is the source of truth.
+    const open = !!view.dom.querySelector('.cm-panel-lint');
+    if (open) closeLintPanel(view); else openLintPanel(view);
+  }, []);
 
   if (!workspace) return null;
   return (
     <section className="bg-[#0b1119] flex flex-col h-full">
       <div className="h-[42px] shrink-0 flex items-center gap-2 px-3 border-b border-border text-subtle">
-        <Button variant="ghost" size="icon" onClick={() => navigate({ to: '/files' })} aria-label="Back to files" className="md:hidden">
+        <Button variant="ghost" size="icon" onClick={() => navigate({ to: routeWithWorkspace('/files', workspace.path) })} aria-label="Back to files" className="md:hidden">
           <ArrowLeft size={17} />
         </Button>
         <span className="text-subtle font-mono text-[9px] font-medium tracking-[0.13em] leading-none uppercase">EDITOR</span>
         <span className="text-[#344552]">/</span>
         <span className="overflow-hidden max-w-[240px] text-[#667887] font-mono text-[10px] text-ellipsis whitespace-nowrap">{workspace.name}</span>
         <div className="ml-auto flex items-center gap-1.5">
+          {selectedFile && (
+            <Button
+              variant={diagnosticCount > 0 ? 'default' : 'ghost'}
+              size="sm"
+              onClick={toggleProblems}
+              aria-label="Problems"
+              className="relative"
+            >
+              <MessageSquareWarning size={14} />
+              <span>Problems</span>
+              {diagnosticCount > 0 && (
+                <span className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-danger text-white text-[10px] font-semibold">
+                  {diagnosticCount}
+                </span>
+              )}
+            </Button>
+          )}
           <Button variant="ghost" size="icon" onClick={() => void store.reloadCurrentFile()} disabled={!selectedFile || store.fileLoading} aria-label="Reload file">
             <RefreshCw size={15} className={store.fileLoading ? 'spin' : ''} />
           </Button>
@@ -62,7 +95,16 @@ export function EditorPanel() {
                 <span>Reading file…</span>
               </div>
             ) : (
-              <CodeEditor value={fileContent} filename={selectedFile.name} reportedLanguage={selectedFile.language} onChange={store.setFileContent} onSave={() => void store.saveCurrentFile()} extraExtensions={lspExtension} />
+              <CodeEditor
+                value={fileContent}
+                filename={selectedFile.name}
+                reportedLanguage={selectedFile.language}
+                onChange={store.editFileContent}
+                onSave={() => void store.saveCurrentFile()}
+                extraExtensions={lspExtension}
+                onMount={(view) => { viewRef.current = view; }}
+                onDiagnosticsChange={setDiagnosticCount}
+              />
             )}
           </div>
           <div className="h-[27px] shrink-0 flex items-center justify-between px-3 border-t border-border bg-[#0f1922] text-subtle font-mono text-[9px]">
@@ -108,4 +150,3 @@ function EditorWelcome({ workspace }: { workspace: { name: string } }) {
     </div>
   );
 }
-
