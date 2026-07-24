@@ -6,3 +6,4 @@ dist/
 !.env.example
 .DS_Store
 apps/web/src/routeTree.gen.ts
+.runtime/
