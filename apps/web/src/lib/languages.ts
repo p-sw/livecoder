@@ -20,8 +20,11 @@ const dotenvParser: StreamParser<unknown> = {
     if (stream.eat('=')) return 'operator';
     if (stream.eat('"')) { stream.eatWhile(/[^"\n]/); stream.eat('"'); return 'string'; }
     if (stream.eat("'")) { stream.eatWhile(/[^'\n]/); stream.eat("'"); return 'string'; }
-    stream.eatWhile(/[^#\n]/);
-    return 'string';
+    // ponytail: always advance — a stray char that isn't a newline still needs
+    // to be consumed, and the trailing newline that closes every dotenv line
+    // would otherwise park the parser on \n and stall the whole stream.
+    stream.next();
+    return null;
   },
   languageData: { commentTokens: { line: '#' } },
 };
@@ -67,7 +70,7 @@ const LOADER_BY_LANGUAGE: Record<string, () => LanguageSupport> = {
   // ponytail: plaintext uses a no-op StreamLanguage parser — LRLanguage's
   // constructor is private, so we route through StreamLanguage for a clean
   // empty highlight tagger instead of building one by hand.
-  plaintext: () => new LanguageSupport(StreamLanguage.define({ name: 'plaintext', token: () => null })),
+  plaintext: () => new LanguageSupport(StreamLanguage.define({ name: 'plaintext', token: (stream) => { stream.next(); return null; } })),
 };
 
 const EXT_TO_LANGUAGE: Record<string, string> = {
