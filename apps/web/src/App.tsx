@@ -41,11 +41,12 @@ import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
 import { ScrollArea } from './components/ui/scroll-area';
 import { CodeEditor } from './components/CodeEditor';
+import { GitPanel } from './components/GitPanel';
 import { useLspExtension } from './lib/lsp';
 import { cn, fileLanguage, relativePath } from './lib/utils';
 import './styles.css';
 
-type View = 'explorer' | 'editor' | 'agent';
+type View = 'explorer' | 'editor' | 'agent' | 'git';
 type AgentConnection = 'idle' | 'connecting' | 'ready' | 'thinking' | 'error';
 
 type ChatMessage = {
@@ -356,6 +357,16 @@ export default function App() {
           onSuggestion={(value) => void sendChat(value)}
           onBack={() => setView('explorer')}
         />
+        {view === 'git' && (
+          <GitPanel
+            workspace={workspace.path}
+            onOpenChange={() => setPickerOpen(true)}
+            onCloned={async (path) => {
+              await openFolder(path);
+              setView('git');
+            }}
+          />
+        )}
       </main>
       <MobileNav view={view} onChange={setView} />
       <WorkspacePicker
@@ -773,7 +784,6 @@ function AdapterPicker({ adapters, active, onSelect }: {
     </div>
   );
 }
-
 function ChatBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'tool') return <div className="tool-message"><div className="tool-icon"><Terminal size={13} /></div><span>{message.text}</span><span className={cn('tool-state', message.toolStatus === 'completed' && 'tool-state-done')}>{message.toolStatus === 'in_progress' ? 'running' : message.toolStatus ?? 'queued'}</span></div>;
   return <div className={cn('chat-bubble-row', message.role === 'user' && 'chat-bubble-row-user')}><div className={cn('chat-bubble', message.role === 'user' ? 'user-bubble' : 'assistant-bubble')}>
@@ -784,5 +794,5 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 }
 
 function MobileNav({ view, onChange }: { view: View; onChange: (view: View) => void }) {
-  return <nav className="mobile-nav"><button className={cn(view === 'explorer' && 'active')} onClick={() => onChange('explorer')}><PanelLeft size={18} /><span>Files</span></button><button className={cn(view === 'editor' && 'active')} onClick={() => onChange('editor')}><Code2 size={18} /><span>Editor</span></button><button className={cn(view === 'agent' && 'active')} onClick={() => onChange('agent')}><MessageSquare size={18} /><span>Agent</span></button></nav>;
+  return <nav className="mobile-nav"><button className={cn(view === 'explorer' && 'active')} onClick={() => onChange('explorer')}><PanelLeft size={18} /><span>Files</span></button><button className={cn(view === 'editor' && 'active')} onClick={() => onChange('editor')}><Code2 size={18} /><span>Editor</span></button><button className={cn(view === 'agent' && 'active')} onClick={() => onChange('agent')}><MessageSquare size={18} /><span>Agent</span></button><button className={cn(view === 'git' && 'active')} onClick={() => onChange('git')}><GitBranch size={18} /><span>Git</span></button></nav>;
 }

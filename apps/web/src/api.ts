@@ -150,3 +150,82 @@ export async function streamAgentMessage(
     if (done) break;
   }
 }
+
+// ---------- Git API ----------
+
+export interface GitRemoteInfo { name: string; fetchUrl: string; pushUrl: string; }
+export interface GitBranchInfo { name: string; current: boolean; remote: boolean; upstream?: string; }
+export interface GitTagInfo { name: string; hash: string; message?: string; }
+export interface GitCommitInfo {
+  hash: string; short: string; author: string; email: string; date: string; subject: string;
+  body?: string; refs?: string;
+}
+export interface GitDiffFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'typechange';
+  oldPath?: string;
+  additions: number; deletions: number; binary: boolean; diff: string;
+}
+export interface GitStatus {
+  branch: string;
+  upstream?: { name: string; ahead: number; behind: number };
+  clean: boolean;
+  files: GitDiffFile[];
+  shortstat: { added: number; modified: number; deleted: number; untracked: number };
+}
+export interface GitCloneResult { path: string; parent: string; inferred: boolean; }
+export interface GitClonePathSuggestion { parent: string; source: 'env' | 'history' | 'home' | 'requested' | 'unnamed'; inferred: string; }
+
+export const git = {
+  clone: (url: string, path?: string) =>
+    request<GitCloneResult>('/api/git/clone', { method: 'POST', body: JSON.stringify({ url, path }) }),
+  suggestClonePath: (name?: string) => {
+    const query = name ? `?name=${encodeURIComponent(name)}` : '';
+    return request<GitClonePathSuggestion>(`/api/git/clone-path${query}`);
+  },
+  status: (workspace: string) =>
+    request<GitStatus>(`/api/git/status?workspace=${encodeURIComponent(workspace)}`),
+  log: (workspace: string, limit = 50) =>
+    request<GitCommitInfo[]>(`/api/git/log?workspace=${encodeURIComponent(workspace)}&limit=${limit}`),
+  diff: (workspace: string, path?: string, staged = false) => {
+    const params = new URLSearchParams({ workspace });
+    if (path) params.set('path', path);
+    if (staged) params.set('staged', 'true');
+    return request<GitDiffFile[]>(`/api/git/diff?${params.toString()}`);
+  },
+  stage: (workspace: string, paths: string[]) =>
+    request<void>('/api/git/stage', { method: 'POST', body: JSON.stringify({ workspace, paths }) }),
+  unstage: (workspace: string, paths: string[]) =>
+    request<void>('/api/git/unstage', { method: 'POST', body: JSON.stringify({ workspace, paths }) }),
+  commit: (workspace: string, message: string, all = false) =>
+    request<{ hash: string; short: string }>('/api/git/commit', { method: 'POST', body: JSON.stringify({ workspace, message, all }) }),
+  push: (workspace: string, options: { remote?: string; branch?: string; setUpstream?: boolean } = {}) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>('/api/git/push', { method: 'POST', body: JSON.stringify({ workspace, ...options }) }),
+  pull: (workspace: string, options: { remote?: string; branch?: string } = {}) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>('/api/git/pull', { method: 'POST', body: JSON.stringify({ workspace, ...options }) }),
+  fetch: (workspace: string, options: { remote?: string; prune?: boolean } = {}) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>('/api/git/fetch', { method: 'POST', body: JSON.stringify({ workspace, ...options }) }),
+  branches: (workspace: string) =>
+    request<GitBranchInfo[]>(`/api/git/branches?workspace=${encodeURIComponent(workspace)}`),
+  checkout: (workspace: string, branch: string, create = false) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>('/api/git/checkout', { method: 'POST', body: JSON.stringify({ workspace, branch, create }) }),
+  deleteBranch: (workspace: string, branch: string, force = false) => {
+    const params = new URLSearchParams({ workspace });
+    if (force) params.set('force', 'true');
+    return request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/branches/${encodeURIComponent(branch)}?${params.toString()}`, { method: 'DELETE' });
+  },
+  tags: (workspace: string) =>
+    request<GitTagInfo[]>(`/api/git/tags?workspace=${encodeURIComponent(workspace)}`),
+  createTag: (workspace: string, name: string, message?: string) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>('/api/git/tags', { method: 'PUT', body: JSON.stringify({ workspace, name, message }) }),
+  deleteTag: (workspace: string, name: string) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/tags/${encodeURIComponent(name)}?workspace=${encodeURIComponent(workspace)}`, { method: 'DELETE' }),
+  remotes: (workspace: string) =>
+    request<GitRemoteInfo[]>(`/api/git/remotes?workspace=${encodeURIComponent(workspace)}`),
+  addRemote: (workspace: string, name: string, url: string) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>('/api/git/remotes', { method: 'POST', body: JSON.stringify({ workspace, name, url }) }),
+  removeRemote: (workspace: string, name: string) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/remotes/${encodeURIComponent(name)}?workspace=${encodeURIComponent(workspace)}`, { method: 'DELETE' }),
+  setRemoteUrl: (workspace: string, name: string, url: string) =>
+    request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/remotes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ workspace, url }) }),
+};
