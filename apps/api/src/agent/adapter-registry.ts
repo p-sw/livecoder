@@ -24,7 +24,7 @@ export interface AdapterSpec {
 // unavailable.
 const BUILTIN_ADAPTERS: AdapterSpec[] = [
   { id: 'pi', label: 'Pi', command: 'pi-acp', args: [] },
-  { id: 'oh-my-pi', label: 'Oh-My-Pi', command: 'oh-my-pi-acp', args: [] },
+  { id: 'oh-my-pi', label: 'Oh-My-Pi', command: 'omp', args: ['acp'] },
 ];
 
 function parseEnvArgs(raw: string | undefined): string[] {
