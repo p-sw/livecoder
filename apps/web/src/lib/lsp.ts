@@ -38,6 +38,11 @@ class WebSocketTransport implements Transport {
       this.socket = socket;
       socket.onopen = () => resolve();
       socket.onerror = () => reject(new Error(`LSP WebSocket failed: ${this.url}`));
+      // ponytail: on server-side close the socket enters a non-OPEN state
+      // and subsequent sends become silent no-ops; requests then time out
+      // without the client knowing. Drop the reference so the next acquire
+      // creates a fresh transport instead of reusing a dead one.
+      socket.onclose = () => { this.socket = null };
       socket.onmessage = (event) => {
         const data = typeof event.data === 'string' ? event.data : '';
         for (const handler of this.handlers) handler(data);
@@ -104,6 +109,9 @@ export function useLspExtension(file: FileRef | null, workspacePath: string | un
         const client = new LSPClient({
           rootUri: pathToFileUri(workspacePath),
           extensions: languageServerExtensions(),
+          // ponytail: 30s — default 3s is too tight for TS type analysis
+          // over a proxied WebSocket (Cloudflare buffers frames).
+          timeout: 30000,
         });
         try {
           await transport.open();
@@ -146,12 +154,13 @@ export function useLspExtension(file: FileRef | null, workspacePath: string | un
   }, [slotKey, languageId, workspacePath, file?.path]);
 
   return useMemo<Extension[]>(() => {
+
     if (!file || !languageId) return [];
     const slot = clients.get(slotKey);
     if (!slot) return [];
     const uri = pathToFileUri(file.path);
     return [slot.client.plugin(uri, languageId)];
-  }, [slotKey, languageId, file?.path]);
+  }, [slotKey, languageId, file?.path, status]);
 }
 
 // ponytail: convert an absolute filesystem path to a file:// URI as LSP
