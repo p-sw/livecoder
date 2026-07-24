@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [
@@ -11,6 +12,10 @@ export default defineConfig({
       routesDirectory: 'src/routes',
       generatedRouteTree: 'src/routeTree.gen.ts',
     }),
+    // ponytail: Tailwind v4 processes utilities at build time. The plugin
+    // scans the source tree for class names; no separate postcss config
+    // needed. The `src/styles.css` file holds the @import + @theme block.
+    tailwindcss(),
     react(),
   ],
   server: {
@@ -44,11 +49,10 @@ export default defineConfig({
           'cm-lang-js': ['@codemirror/lang-javascript'],
           'cm-lang-css': ['@codemirror/lang-css'],
           'cm-lang-html': ['@codemirror/lang-html'],
-          'cm-lang-json': ['@codemirror/lang-json'],
+          react: ['react', 'react-dom'],
           'cm-lang-yaml': ['@codemirror/lang-yaml'],
           'cm-lang-python': ['@codemirror/lang-python'],
           'cm-lang-markdown': ['@codemirror/lang-markdown'],
-          react: ['react', 'react-dom'],
         },
       },
     },

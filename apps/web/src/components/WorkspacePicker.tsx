@@ -1,6 +1,8 @@
-// ponytail: extracted from App.tsx so it's reusable. The dialog is a small
-// standalone component; the only store interaction is the `onOpen` callback
-// that closes the dialog + opens the workspace.
+// ponytail: workspace picker with Tailwind utility classes. The previous
+// version used `.dialog-field` / `.folder-actions` / etc. — those
+// rules were never migrated so the path input had no padding and the
+// Browse/Up buttons crowded the field. Now they all use utilities
+// from the Tailwind theme so the layout reads as designed.
 
 import { useCallback, useEffect, useState } from 'react';
 import { FolderOpen, Loader2, RefreshCw } from 'lucide-react';
@@ -64,43 +66,84 @@ export function WorkspacePicker({ open, onClose, onOpen, currentPath }: Workspac
 
   if (!open) return null;
   return (
-    <div className="dialog-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title">
-        <header className="dialog-header">
+    <div
+      role="presentation"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      className="fixed z-20 inset-0 grid place-items-center p-5 bg-[rgba(3,6,9,0.7)] backdrop-blur-md md:items-center max-md:items-end max-md:p-0"
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="folder-dialog-title"
+        className="w-full max-w-[520px] max-h-[min(690px,calc(100dvh-40px))] flex flex-col border border-border-bright rounded-[13px] bg-[#101821] shadow-[0_24px_80px_rgba(0,0,0,0.5),0_0_0_1px_rgba(141,244,189,0.035)] overflow-hidden md:max-h-[min(690px,calc(100dvh-40px))] max-md:w-full max-md:max-h-[92dvh] max-md:border-b-0 max-md:rounded-t-[15px]"
+      >
+        <header className="flex items-start justify-between pt-[19px] pr-[19px] pb-[15px] pl-[19px] border-b border-border">
           <div>
-            <div className="dialog-kicker">CHOOSE WORKSPACE</div>
-            <h2 id="folder-dialog-title">Open a folder</h2>
+            <div className="text-subtle font-mono text-[9px] font-medium tracking-[0.13em] leading-none uppercase">CHOOSE WORKSPACE</div>
+            <h2 id="folder-dialog-title" className="m-0 mt-[7px] text-fg text-[19px] font-semibold tracking-[-0.04em]">Open a folder</h2>
           </div>
-          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><span aria-hidden="true">×</span></Button>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close" className="w-[30px] h-[30px] -mt-1.5 -mr-1.5"><span aria-hidden>×</span></Button>
         </header>
-        <div className="dialog-body">
-          <label className="dialog-field">
-            <span>Path</span>
-            <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="/path/to/folder" onKeyDown={(event) => { if (event.key === 'Enter') void chooseFolder(); }} />
+        <div className="flex flex-col gap-4 px-5 py-4 flex-1 min-h-0">
+          <label className="flex flex-col gap-2">
+            <span className="text-[10px] font-mono text-muted tracking-[0.13em] uppercase">Path</span>
+            <div className="flex gap-2">
+              <input
+                value={path}
+                onChange={(event) => setPath(event.target.value)}
+                placeholder="/path/to/folder"
+                onKeyDown={(event) => { if (event.key === 'Enter') void chooseFolder(); }}
+                className="flex-1 h-9 px-3 text-[13px] text-fg bg-bg border border-border rounded-md outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-subtle focus:border-accent/55 focus:shadow-[0_0_0_3px_rgba(141,244,189,0.08)]"
+              />
+              <Button variant="ghost" size="sm" onClick={() => navigate(path || '/')}>
+                <RefreshCw size={13} /> Browse
+              </Button>
+              {result?.parentPath && (
+                <Button variant="ghost" size="sm" onClick={() => navigate(result.parentPath!)}>↑ Up</Button>
+              )}
+            </div>
           </label>
-          <div className="folder-actions">
-            <Button variant="ghost" size="sm" onClick={() => navigate(path || '/')}><RefreshCw size={13} /> Browse</Button>
-            {result?.parentPath && <Button variant="ghost" size="sm" onClick={() => navigate(result.parentPath!)}>↑ Up</Button>}
-          </div>
-          <ScrollArea className="folder-list">
+          <ScrollArea className="min-h-[260px] max-h-[340px] flex-shrink border border-border rounded-md">
             {loading ? (
-              <div className="picker-loading"><Loader2 size={16} className="spin" /> <span>Reading folder…</span></div>
+              <div className="flex items-center justify-center gap-2 py-10 text-subtle font-mono text-[11px]">
+                <Loader2 size={16} className="spin" /> <span>Reading folder…</span>
+              </div>
             ) : result?.entries.length ? (
-              result.entries.map((entry) => (
-                <button className="folder-option" key={entry.path} onClick={() => navigate(entry.path)} type="button">
-                  <FolderOpen size={15} />
-                  <span className="folder-option-name">{entry.name}</span>
-                </button>
-              ))
+              <ul className="flex flex-col gap-0.5 p-1.5">
+                {result.entries.map((entry) => (
+                  <li key={entry.path}>
+                    <button
+                      type="button"
+                      onClick={() => navigate(entry.path)}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md bg-transparent text-fg text-left text-[13px] font-mono hover:bg-surface-hover"
+                    >
+                      <FolderOpen size={14} className="text-accent shrink-0" />
+                      <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{entry.name}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             ) : (
-              <div className="picker-empty"><FolderOpen size={22} /><span>No folders here</span></div>
+              <div className="flex flex-col items-center gap-2.5 py-12 text-subtle text-center text-[11px]">
+                <FolderOpen size={22} />
+                <span>No folders here</span>
+              </div>
             )}
           </ScrollArea>
-          {error && <div className="inline-error">⚠ {error}</div>}
+          {error && (
+            <div className="flex items-center gap-2 px-3 py-2 border border-danger/25 rounded-md text-danger bg-danger/10 text-[11px]">
+              ⚠ {error}
+            </div>
+          )}
         </div>
-        <footer className="dialog-footer">
-          <div className="folder-rule"><span className="status-dot" /> folders only</div>
-          <div className="dialog-actions"><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => void chooseFolder()} disabled={!result || opening}>{opening ? <Loader2 className="spin" size={16} /> : <FolderOpen size={16} />} Open this folder</Button></div>
+        <footer className="flex items-center justify-between gap-2.5 px-5 pt-[15px] pb-[17px] max-md:pb-[calc(17px+env(safe-area-inset-bottom))]">
+          <div className="flex items-center gap-2 text-subtle text-[10px] font-mono"><span className="w-1.5 h-1.5 rounded-full bg-accent-strong" /> folders only</div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button onClick={() => void chooseFolder()} disabled={!result || opening}>
+              {opening ? <Loader2 className="spin" size={16} /> : <FolderOpen size={16} />} Open this folder
+            </Button>
+          </div>
         </footer>
       </section>
     </div>
