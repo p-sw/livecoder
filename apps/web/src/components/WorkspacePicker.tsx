@@ -103,7 +103,7 @@ export function WorkspacePicker({ open, onClose, onOpen, currentPath }: Workspac
               )}
             </div>
           </label>
-          <ScrollArea className="min-h-[260px] max-h-[340px] flex-shrink border border-border rounded-md">
+          <ScrollArea className="ui-scroll-area flex-1 min-h-[260px] flex flex-col border border-border rounded-md">
             {loading ? (
               <div className="flex items-center justify-center gap-2 py-10 text-subtle font-mono text-[11px]">
                 <Loader2 size={16} className="spin" /> <span>Reading folder…</span>
