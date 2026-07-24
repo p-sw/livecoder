@@ -1,9 +1,10 @@
 @import "tailwindcss";
 
-/* ponytail: Tailwind v4 is CSS-first. The @theme block maps our dark
-   palette to Tailwind color tokens so utilities like `bg-bg`, `text-fg`,
-   `border-border`, `ring-accent/55` work out of the box. No JS config
-   file is needed. */
+/* ponytail: Tailwind v4 is CSS-first. Two theme namespaces coexist:
+   1) `--color-*` in @theme → utilities like `bg-bg`, `text-fg` (app-
+      specific tokens the panels use).
+   2) `--*` in :root → shadcn-style variables the new shadcn/ui
+      components expect (bg-background, text-primary-foreground, etc.). */
 @theme {
   --color-bg: #090d13;
   --color-empty-bg: radial-gradient(ellipse 65% 65% at 50% 42%, rgba(31,65,67,.18), transparent 70%), #090d13;
@@ -33,12 +34,38 @@
   --radius: 9px;
 }
 
-/* ponytail: base layer = global resets and the dark scheme. App is
-   dark-only, so we just declare color-scheme once. */
+/* ponytail: shadcn-compatible variables. Each is an `hsl(H S% L%)`
+   triplet so Tailwind v4's color utility expansion
+   `hsl(var(--background) / <alpha>)` works. The app is dark-only; the
+   values match the existing palette. A future light toggle would
+   override these in a `.light` class without touching Tailwind. */
+:root {
+  --background: hsl(222 47% 6%);
+  --foreground: hsl(210 20% 95%);
+  --card: hsl(220 30% 9%);
+  --card-foreground: hsl(210 20% 95%);
+  --popover: hsl(222 47% 6%);
+  --popover-foreground: hsl(210 20% 95%);
+  --primary: hsl(152 80% 70%);
+  --primary-foreground: hsl(158 100% 6%);
+  --secondary: hsl(217 33% 17%);
+  --secondary-foreground: hsl(210 20% 95%);
+  --muted: hsl(217 33% 17%);
+  --muted-foreground: hsl(215 16% 60%);
+  --accent: hsl(152 80% 70%);
+  --accent-foreground: hsl(158 100% 6%);
+  --destructive: hsl(0 84% 70%);
+  --destructive-foreground: hsl(210 20% 95%);
+  --border: hsl(217 33% 20%);
+  --input: hsl(217 33% 20%);
+  --ring: hsl(152 80% 70%);
+
+  color-scheme: dark;
+}
+
+/* ponytail: base layer = global resets. App is dark-only, so we just
+   declare color-scheme once. */
 @layer base {
-  :root {
-    color-scheme: dark;
-  }
   *, *::before, *::after {
     box-sizing: border-box;
   }
@@ -76,13 +103,9 @@
   }
 }
 
-/* ponytail: component layer for one-off utilities that don't translate
-   cleanly to class strings. The previous 700-line styles.css has been
-   collapsed into Tailwind utility classes in the components; what's
-   left here is the things Tailwind can't express. */
+/* ponytail: components layer for the two things Tailwind utilities
+   can't express: spinning-icon animation and dark-themed scrollbar. */
 @layer components {
-  /* ponytail: spinning icon used by buttons + loaders. Matches the
-     1s linear loop that the rest of the app expects. */
   .spin {
     animation: spin 1s linear infinite;
   }
@@ -90,9 +113,6 @@
     to { transform: rotate(360deg); }
   }
 
-  /* ponytail: shadcn-style dark scrollbars. Tailwind doesn't have a
-     stable cross-browser scrollbar-color utility that matches the
-     design tokens. */
   .ui-scroll-area {
     scrollbar-width: thin;
     scrollbar-color: #2b3a48 transparent;
