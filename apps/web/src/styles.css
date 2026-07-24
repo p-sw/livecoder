@@ -265,6 +265,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .git-log-meta { display: flex; gap: 8px; margin-top: 2px; color: var(--subtle); font-family: var(--mono); font-size: 9px; }
 .git-log-refs { color: var(--blue); }
 /* Agent */
+.route-spinner { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 40px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.route-spinner svg { color: var(--accent); }
 .agent-panel { background: #0d141d; }
 .agent-header { padding-left: 14px; }
 .agent-title { display: flex; align-items: center; gap: 9px; }

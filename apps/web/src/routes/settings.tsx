@@ -1,13 +1,22 @@
-// ponytail: thin wrapper. The settings UI lives in SettingsPanel so the
-// route file stays one line.
+// ponytail: lazy-load the settings panel. It pulls in lucide-react icons
+// and the api helpers; cheaper to fetch on first navigation.
 
 import { createFileRoute } from '@tanstack/react-router';
-import { SettingsPanel } from '../components/SettingsPanel';
+import { lazy, Suspense } from 'react';
+import { RouteSpinner } from '../components/RouteSpinner';
+
+const SettingsPanel = lazy(() =>
+  import('../components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })),
+);
 
 export const Route = createFileRoute('/settings')({
   component: SettingsRoute,
 });
 
 function SettingsRoute() {
-  return <SettingsPanel />;
+  return (
+    <Suspense fallback={<RouteSpinner />}>
+      <SettingsPanel />
+    </Suspense>
+  );
 }

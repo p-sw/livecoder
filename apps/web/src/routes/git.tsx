@@ -1,13 +1,22 @@
-// ponytail: thin wrapper. The git source-control UI lives in GitPanel.
-// The route file gives the URL a navigable name.
+// ponytail: lazy-load the Git panel so the heaviest icon set + dialog
+// code only ships when the user opens the source-control view.
 
 import { createFileRoute } from '@tanstack/react-router';
-import { GitPanel } from '../components/GitPanel';
+import { lazy, Suspense } from 'react';
+import { RouteSpinner } from '../components/RouteSpinner';
+
+const GitPanel = lazy(() =>
+  import('../components/GitPanel').then((m) => ({ default: m.GitPanel })),
+);
 
 export const Route = createFileRoute('/git')({
   component: GitRoute,
 });
 
 function GitRoute() {
-  return <GitPanel />;
+  return (
+    <Suspense fallback={<RouteSpinner />}>
+      <GitPanel />
+    </Suspense>
+  );
 }

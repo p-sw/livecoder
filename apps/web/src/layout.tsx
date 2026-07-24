@@ -1,8 +1,10 @@
-// ponytail: shared chrome (topbar, mobile nav, workspace picker) lives here
-// so each route file stays focused on its own panel. State is provided by
-// <WorkspaceProvider> at the router root.
-
+import { lazy, Suspense } from 'react';
 import { Outlet, Link, useRouterState } from '@tanstack/react-router';
+import { RouteSpinner } from './components/RouteSpinner';
+
+const WorkspacePicker = lazy(() =>
+  import('./components/WorkspacePicker').then((m) => ({ default: m.WorkspacePicker })),
+);
 import {
   Code2,
   FolderOpen,
@@ -14,7 +16,6 @@ import {
 import type { WorkspaceResult } from './api';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
-import { WorkspacePicker } from './components/WorkspacePicker';
 import { WorkspaceProvider, useWorkspaceStore } from './workspace-context';
 
 export function Layout() {
@@ -33,12 +34,14 @@ function AppShell() {
       <TopBar workspace={workspace} onOpen={() => setPickerOpen(true)} />
       <Outlet />
       <MobileNav />
-      <WorkspacePicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onOpen={openFolder}
-        currentPath={workspace?.path}
-      />
+      <Suspense fallback={null}>
+        <WorkspacePicker
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          onOpen={openFolder}
+          currentPath={workspace?.path}
+        />
+      </Suspense>
     </div>
   );
 }
