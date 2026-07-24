@@ -9,12 +9,13 @@ import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
 import { useWorkspaceStore, type ChatMessage } from '../workspace-context';
 import { cn } from '../lib/utils';
+import { routeWithWorkspace } from '../router';
 
 export function AgentPanel() {
   const store = useWorkspaceStore();
   const navigate = useNavigate();
+  const { workspace } = store;
   const {
-    workspace,
     chatMessages,
     chatInput,
     agentBusy,
@@ -47,7 +48,7 @@ export function AgentPanel() {
     <aside className="bg-[#0d141d] flex flex-col h-full">
       <div className="h-16 shrink-0 flex items-center justify-between pl-4 pr-3.5 border-b border-border">
         <div className="flex items-center gap-2.5">
-          <Button variant="ghost" size="icon" onClick={() => navigate({ to: '/files' })} aria-label="Back to files" className="md:hidden">
+          <Button variant="ghost" size="icon" onClick={() => navigate({ to: routeWithWorkspace('/files', workspace?.path) })} aria-label="Back to files" className="md:hidden">
             <ArrowLeft size={17} />
           </Button>
           <div className="w-[28px] h-[28px] grid place-items-center rounded-md text-blue bg-blue/10">

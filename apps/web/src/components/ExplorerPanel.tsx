@@ -23,11 +23,11 @@ import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
 import { useWorkspaceStore } from '../workspace-context';
 import { cn } from '../lib/utils';
+import { routeWithWorkspace } from '../router';
 
 export function ExplorerPanel() {
   const store = useWorkspaceStore();
   const { workspace, selectedFile, entries, expanded, filter, visibleEntries } = store;
-
   const handleFileClick = useCallback((entry: FileEntry) => {
     if (!workspace) return;
     void store.loadFile(entry, workspace.path);
@@ -84,6 +84,7 @@ export function ExplorerPanel() {
                 onToggle={handleToggle}
                 onFile={handleFileClick}
                 selectedFile={selectedFile}
+                workspacePath={workspace.path}
               />
             ))
           ) : (
@@ -113,6 +114,7 @@ function TreeRow({
   onToggle,
   onFile,
   selectedFile,
+  workspacePath,
 }: {
   entry: FileEntry;
   depth: number;
@@ -121,6 +123,7 @@ function TreeRow({
   onToggle: (entry: FileEntry) => Promise<void> | void;
   onFile: (entry: FileEntry) => void;
   selectedFile: FileEntry | null;
+  workspacePath: string;
 }) {
   const isDirectory = entry.kind === 'directory';
   const isOpen = Boolean(expanded[entry.path]);
@@ -130,9 +133,9 @@ function TreeRow({
       void onToggle(entry);
     } else {
       onFile(entry);
-      navigate({ to: '/editor' });
+      navigate({ to: routeWithWorkspace('/editor', workspacePath) });
     }
-  }, [entry, isDirectory, navigate, onFile, onToggle]);
+  }, [entry, isDirectory, navigate, onFile, onToggle, workspacePath]);
 
   return (
     <div>
@@ -154,7 +157,7 @@ function TreeRow({
         <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{entry.name}</span>
       </button>
       {isDirectory && isOpen && allEntries[entry.path]?.map((child) => (
-        <TreeRow key={child.path} entry={child} depth={depth + 1} expanded={expanded} allEntries={allEntries} onToggle={onToggle} onFile={onFile} selectedFile={selectedFile} />
+        <TreeRow key={child.path} entry={child} depth={depth + 1} expanded={expanded} allEntries={allEntries} onToggle={onToggle} onFile={onFile} selectedFile={selectedFile} workspacePath={workspacePath} />
       ))}
       {isDirectory && isOpen && !allEntries[entry.path] && (
         <div className="flex items-center gap-1.5 text-subtle font-mono text-[10px]" style={{ paddingLeft: `${42 + depth * 17}px` }}>

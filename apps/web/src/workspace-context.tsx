@@ -14,6 +14,7 @@ import {
   type ReactNode,
 } from 'react';
 import { relativePath } from './lib/utils';
+import { readWorkspaceFromUrl, routeWithWorkspace } from './router';
 import {
   agentStatus,
   listEntries,
@@ -50,6 +51,7 @@ export interface WorkspaceStore {
   pickerOpen: boolean;
   setPickerOpen: (open: boolean) => void;
   openFolder: (path: string) => Promise<void>;
+  loadWorkspace: (path: string) => Promise<void>;
 
   selectedFile: FileEntry | null;
   entries: Record<string, FileEntry[]>;
@@ -66,6 +68,7 @@ export interface WorkspaceStore {
   reloadCurrentFile: () => Promise<void>;
   setFilter: (filter: string) => void;
   setFileContent: (content: string) => void;
+  editFileContent: (content: string) => void;
   visibleEntries: FileEntry[];
 
   chatMessages: ChatMessage[];
@@ -89,7 +92,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Record<string, FileEntry[]>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState('');
-  const [fileContent, setFileContent] = useState('');
+  const [fileContent, setFileContentState] = useState('');
   const [fileLoading, setFileLoading] = useState(false);
   const [fileDirty, setFileDirty] = useState(false);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
@@ -121,12 +124,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const openFolder = useCallback(async (path: string) => {
     if (fileDirty && !window.confirm('Discard unsaved changes and open another workspace?')) return;
     const result = await openWorkspace(path);
+    const url = new URL(window.location.href);
+    url.searchParams.set('workspace', result.path);
+    window.history.replaceState(window.history.state, '', url);
     setWorkspace(result);
     setEntries({ [result.path]: result.entries });
     setExpanded({});
     setFilter('');
-    setSelectedFile(null);
-    setFileContent('');
+    setFileContentState('');
     setFileDirty(false);
     setSaveState('saved');
     setChatMessages([WELCOME_MESSAGE]);
@@ -134,6 +139,46 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setAgentConnection('idle');
     setPickerOpen(false);
   }, [fileDirty]);
+
+  // ponytail: silent workspace load — same as openFolder but skips the
+  // dirty-confirm prompt. Used for the initial URL-driven restore and
+  // for in-app re-mounts where the user has not asked to discard work.
+  const loadWorkspace = useCallback(async (path: string) => {
+    const result = await openWorkspace(path);
+    setWorkspace(result);
+    setEntries({ [result.path]: result.entries });
+    setExpanded({});
+    setFilter('');
+    setFileContentState('');
+    setFileDirty(false);
+    setSaveState('saved');
+    setChatMessages([WELCOME_MESSAGE]);
+    setAgentConfigured(null);
+    setAgentConnection('idle');
+    setPickerOpen(false);
+  }, []);
+
+  // ponytail: restore the workspace from ?workspace=<path> on hard reload.
+  // Skips the dirty-confirm because a reload doesn't carry that intent.
+  useEffect(() => {
+    const target = readWorkspaceFromUrl();
+    if (target && target !== workspace?.path) {
+      void loadWorkspace(target).catch(() => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ponytail: react to URL changes (back/forward, programmatic nav) so the
+  // workspace stays in sync with whatever ?workspace currently points at.
+  useEffect(() => {
+    const sync = () => {
+      const target = readWorkspaceFromUrl();
+      if (!target || target === workspace?.path) return;
+      void loadWorkspace(target).catch(() => undefined);
+    };
+    window.addEventListener('popstate', sync);
+    return () => window.removeEventListener('popstate', sync);
+  }, [loadWorkspace, workspace?.path]);
 
   const loadFile = useCallback(async (entry: FileEntry, root: string) => {
     if (fileDirty && selectedFile?.path !== entry.path && !window.confirm('Discard unsaved changes and open another file?')) return;
@@ -145,10 +190,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     try {
       const result = await readFile(entry.path, root);
       if (requestId !== fileRequest.current) return;
-      setFileContent(result.content);
+      setFileContentState(result.content);
     } catch (error) {
       if (requestId !== fileRequest.current) return;
-      setFileContent(`Unable to open this file.\n\n${error instanceof Error ? error.message : String(error)}`);
+      setFileContentState(`Unable to open this file.\n\n${error instanceof Error ? error.message : String(error)}`);
     } finally {
       if (requestId === fileRequest.current) setFileLoading(false);
     }
@@ -179,6 +224,21 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [entries, expanded]);
 
+  // ponytail: loaders and the file watcher call this — the on-disk buffer
+  // is authoritative, so dirty state must NOT flip when content is replaced.
+  const setFileContent = useCallback((content: string) => {
+    setFileContentState(content);
+  }, []);
+
+  // ponytail: typing into the editor marks the file dirty. Done as a
+  // single store mutation so the Save button + unsaved indicator update
+  // in the same render pass as the doc change.
+  const editFileContent = useCallback((content: string) => {
+    setFileContentState(content);
+    setFileDirty(true);
+    setSaveState((current) => (current === 'error' ? 'saved' : current));
+  }, []);
+
   const saveCurrentFile = useCallback(async () => {
     if (!workspace || !selectedFile || !fileDirty) return;
     setSaveState('saving');
@@ -197,7 +257,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setFileLoading(true);
     try {
       const result = await readFile(selectedFile.path, workspace.path);
-      setFileContent(result.content);
+      setFileContentState(result.content);
       setSelectedFile((current) => current ? { ...current, size: result.size, modified: result.modified } : current);
     } catch {
       // Keep the editor content if a file is removed during a refresh.
@@ -219,7 +279,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         if (currentFile && !dirtyRef.current) {
           void readFile(currentFile.path, workspace.path).then((result) => {
             if (dirtyRef.current || selectedRef.current?.path !== currentFile.path) return;
-            setFileContent(result.content);
+            setFileContentState(result.content);
             setSelectedFile((current) => current ? { ...current, size: result.size, modified: result.modified } : current);
           }).catch(() => undefined);
         }
@@ -315,6 +375,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     pickerOpen,
     setPickerOpen,
     openFolder,
+    loadWorkspace,
     selectedFile,
     entries,
     expanded,
@@ -330,6 +391,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     reloadCurrentFile,
     setFilter,
     setFileContent,
+    editFileContent,
     visibleEntries,
     chatMessages,
     chatInput,

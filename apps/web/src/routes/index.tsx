@@ -4,6 +4,8 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router';
 import { EmptyState } from '../layout';
 import { useWorkspaceStore } from '../workspace-context';
+import { routeWithWorkspace } from '../router';
+
 
 export const Route = createFileRoute('/')({
   component: IndexRoute,
@@ -11,5 +13,5 @@ export const Route = createFileRoute('/')({
 
 function IndexRoute() {
   const { workspace } = useWorkspaceStore();
-  return workspace ? <Navigate to="/files" replace /> : <EmptyState />;
+  return workspace ? <Navigate to={routeWithWorkspace('/files', workspace.path)} replace /> : <EmptyState />;
 }

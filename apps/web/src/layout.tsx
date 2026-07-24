@@ -6,6 +6,7 @@
 
 import { lazy, Suspense } from 'react';
 import { Outlet, Link, useRouterState } from '@tanstack/react-router';
+import { routeWithWorkspace } from './router';
 import {
   Code2,
   FolderOpen,
@@ -122,8 +123,8 @@ function MobileNav() {
         const active = pathname === tab.to;
         return (
           <Link
-            key={tab.to}
-            to={tab.to}
+            to={routeWithWorkspace(tab.to, workspace?.path)}
+
             aria-disabled={locked}
             className={
               'relative min-w-[74px] flex flex-col items-center justify-center gap-1 bg-transparent text-[9px] no-underline ' +

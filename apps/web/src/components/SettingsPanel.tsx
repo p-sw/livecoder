@@ -10,9 +10,12 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { ScrollArea } from './ui/scroll-area';
 import { agentStatus, settings, type AdapterInfo, type AgentStatus, type Settings } from '../api';
+import { useWorkspaceStore } from '../workspace-context';
+import { routeWithWorkspace } from '../router';
 
 export function SettingsPanel() {
   const navigate = useNavigate();
+  const { workspace } = useWorkspaceStore();
   const [current, setCurrent] = useState<Settings>({ cloneBasePath: null, defaultAdapterId: null });
   const [defaults] = useState<Settings>({ cloneBasePath: null, defaultAdapterId: null });
   const [path, setPath] = useState<string>('');
@@ -87,9 +90,9 @@ export function SettingsPanel() {
 
   return (
     <aside className="bg-surface-alt flex flex-col h-full">
-      <div className="px-[14px] py-0 pl-4 h-16 shrink-0 flex items-center justify-between border-b border-border">
+      <div className="h-16 shrink-0 flex items-center justify-between pl-4 pr-3.5 border-b border-border">
         <div className="flex items-center gap-2.5">
-          <Button variant="ghost" size="icon" onClick={() => navigate({ to: '/files' })} aria-label="Back to files" className="md:hidden">
+          <Button variant="ghost" size="icon" onClick={() => navigate({ to: routeWithWorkspace('/files', workspace?.path) })} aria-label="Back to files" className="md:hidden">
             <ArrowLeft size={17} />
           </Button>
           <div>
