@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import type { Server as NodeHttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -17,9 +17,8 @@ interface SpawnedServer {
 // This strips/rewrites that framing so the WebSocket peer can pass plain JSON
 // (which is what @codemirror/lsp-client expects).
 function createServerProcess(spec: LspServerSpec, cwd: string): SpawnedServer | null {
-  const command = resolveCommand(spec);
+  const command = resolveCommand(spec, cwd);
   if (!command) return null;
-
   let child: ChildProcessWithoutNullStreams;
   try {
     child = spawn(command, spec.args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -42,13 +41,16 @@ function createServerProcess(spec: LspServerSpec, cwd: string): SpawnedServer | 
   return { child, buffer: Buffer.alloc(0), send, close };
 }
 
-function resolveCommand(spec: LspServerSpec): string | null {
-  const candidates = [spec.command, `node_modules/.bin/${spec.command}`];
-  for (const candidate of candidates) {
-    if (candidate.includes('/') && existsSync(candidate)) return candidate;
-    if (!candidate.includes('/')) return candidate;
-  }
-  return null;
+function resolveCommand(spec: LspServerSpec, cwd: string): string | null {
+  // ponytail: the local install in the workspace's node_modules wins —
+  // pinned versions beat whatever happens to be on PATH. The workspace
+  // cwd is the file root the user opened, so its node_modules/.bin is
+  // where project-scoped LSP servers land. Bare name is the last resort
+  // so spawn() can do its own PATH lookup.
+  const local = join(cwd, 'node_modules', '.bin', spec.command);
+  if (existsSync(local)) return local;
+  if (existsSync(spec.command)) return spec.command;
+  return spec.command;
 }
 
 // ponytail: one child per language per workspace — most LSP servers handle
