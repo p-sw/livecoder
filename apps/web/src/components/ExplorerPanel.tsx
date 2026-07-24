@@ -44,7 +44,7 @@ export function ExplorerPanel() {
 
   if (!workspace) return null;
   return (
-    <aside className="bg-surface flex flex-col h-full">
+    <aside className="bg-surface flex flex-col h-full min-h-0">
       <div className="h-16 shrink-0 flex items-center justify-between px-3.5 pl-4 border-b border-[rgba(32,45,58,0.7)]">
         <div>
           <div className="text-subtle font-mono text-[9px] font-medium tracking-[0.13em] leading-none uppercase">WORKSPACE</div>

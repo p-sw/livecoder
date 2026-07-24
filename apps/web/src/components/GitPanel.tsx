@@ -34,7 +34,7 @@ export function GitPanel() {
 }
 
 function EmptyGitPanel() {
-  return <aside aria-hidden="true" className="bg-[#0c1219] h-full" />;
+  return <aside aria-hidden="true" className="bg-[#0c1219] h-full min-h-0" />;
 }
 
 function GitPanelBody({ workspacePath, openFolder }: { workspacePath: string; openFolder: (path: string) => Promise<void> }) {
@@ -137,7 +137,7 @@ function GitPanelBody({ workspacePath, openFolder }: { workspacePath: string; op
   const onRemoveRemote = (name: string) => runOp(`remove remote ${name}`, () => git.removeRemote(workspacePath, name));
 
   return (
-    <aside className="bg-[#0c1219] flex flex-col h-full">
+    <aside className="bg-[#0c1219] flex flex-col h-full min-h-0">
       <div className="px-3.5 pl-4 h-16 shrink-0 flex items-center justify-between border-b border-border">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 grid place-items-center rounded-md text-blue bg-blue/10">
