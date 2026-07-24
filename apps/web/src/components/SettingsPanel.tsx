@@ -1,7 +1,7 @@
-// ponytail: the settings panel reads from /api/settings on mount, lets the
-// user override the clone base path and default agent, and PUTs back to
-// the same endpoint. Each row shows the env fallback so the user knows
-// what their override is replacing.
+// ponytail: settings panel with Tailwind utility classes. The previous
+// version used .settings-row / .settings-row-label / etc. that lived in
+// styles.css. Now they're inline utilities so adding new rows doesn't
+// require touching the global stylesheet.
 
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
@@ -14,7 +14,7 @@ import { agentStatus, settings, type AdapterInfo, type AgentStatus, type Setting
 export function SettingsPanel() {
   const navigate = useNavigate();
   const [current, setCurrent] = useState<Settings>({ cloneBasePath: null, defaultAdapterId: null });
-  const [defaults, setDefaults] = useState<Settings>({ cloneBasePath: null, defaultAdapterId: null });
+  const [defaults] = useState<Settings>({ cloneBasePath: null, defaultAdapterId: null });
   const [path, setPath] = useState<string>('');
   const [clonePath, setClonePath] = useState('');
   const [adapter, setAdapter] = useState<string>('');
@@ -24,18 +24,24 @@ export function SettingsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  const refresh = useCallback(async () => {
+    setError(null);
+    try {
+      const [s, a] = await Promise.all([settings.get(), agentStatus()]);
+      setCurrent(s.settings);
+      setPath(s.path);
+      setClonePath(s.settings.cloneBasePath ?? '');
+      setAdapter(s.settings.defaultAdapterId ?? a.defaultAdapter);
+      setAdapters(a.adapters);
+      setStatusSource(a.defaultAdapterSource);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
   useEffect(() => {
-    Promise.all([settings.get(), agentStatus()])
-      .then(([s, a]) => {
-        setCurrent(s.settings);
-        setDefaults(s.defaults);
-        setPath(s.path);
-        setClonePath(s.settings.cloneBasePath ?? '');
-        setAdapter(s.settings.defaultAdapterId ?? a.defaultAdapter);
-        setAdapters(a.adapters);
-        setStatusSource(a.defaultAdapterSource);
-      })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onSave = useCallback(async () => {
@@ -52,8 +58,8 @@ export function SettingsPanel() {
       setClonePath(result.settings.cloneBasePath ?? '');
       setAdapter(result.settings.defaultAdapterId ?? '');
       setSaved(true);
-      // ponytail: re-fetch the status so the "current default" label updates
-      // without a page refresh.
+      // ponytail: re-fetch the status so the "current default" label
+      // updates without a page refresh.
       const status = await agentStatus();
       setStatusSource(status.defaultAdapterSource);
     } catch (err) {
@@ -80,101 +86,108 @@ export function SettingsPanel() {
   }, [current]);
 
   return (
-    <aside className="panel settings-panel">
-      <div className="settings-header">
-        <div className="settings-title">
-          <Button variant="ghost" size="icon" className="mobile-back" onClick={() => navigate({ to: '/files' })} aria-label="Back to files"><ArrowLeft size={17} /></Button>
+    <aside className="bg-surface-alt flex flex-col h-full">
+      <div className="px-[14px] py-0 pl-4 h-16 shrink-0 flex items-center justify-between border-b border-border">
+        <div className="flex items-center gap-2.5">
+          <Button variant="ghost" size="icon" onClick={() => navigate({ to: '/files' })} aria-label="Back to files" className="md:hidden">
+            <ArrowLeft size={17} />
+          </Button>
           <div>
-            <div className="panel-kicker">SETTINGS</div>
-            <h2>Workspace settings</h2>
+            <div className="text-subtle font-mono text-[9px] font-medium tracking-[0.13em] leading-none uppercase">SETTINGS</div>
+            <h2 className="m-0 mt-1.5 text-fg text-sm font-semibold tracking-[-0.02em]">Workspace settings</h2>
           </div>
         </div>
-        <Button variant="ghost" size="icon" onClick={() => void Promise.all([settings.get(), agentStatus()]).then(([s, a]) => { setCurrent(s.settings); setDefaults(s.defaults); setPath(s.path); setClonePath(s.settings.cloneBasePath ?? ''); setAdapter(s.settings.defaultAdapterId ?? a.defaultAdapter); setAdapters(a.adapters); setStatusSource(a.defaultAdapterSource); }).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))} disabled={busy} aria-label="Reload"><RefreshCw size={15} className={busy ? 'spin' : ''} /></Button>
+        <Button variant="ghost" size="icon" onClick={() => void refresh()} disabled={busy} aria-label="Reload">
+          <RefreshCw size={15} className={busy ? 'spin' : ''} />
+        </Button>
       </div>
 
-      <ScrollArea className="settings-scroll">
-        <section className="settings-section">
-          <h3>Source control</h3>
-          <p className="settings-hint">Stored at <code>{path || '~/.config/livecoder/settings.json'}</code>. Overrides env vars but does not write to <code>.env</code>.</p>
+      <ScrollArea className="ui-scroll-area">
+        <section className="px-[18px] py-4 pb-6">
+          <h3 className="m-0 mb-1 text-fg text-[13px] font-semibold tracking-[-0.01em]">Source control</h3>
+          <p className="m-0 mb-4 text-muted text-[11px] leading-[1.5]">
+            Stored at <code className="px-1 py-px border border-border rounded bg-[rgba(255,255,255,0.03)] text-fg font-mono text-[10px] break-all">{path || '~/.config/livecoder/settings.json'}</code>.
+            Overrides env vars but does not write to <code className="px-1 py-px border border-border rounded bg-[rgba(255,255,255,0.03)] text-fg font-mono text-[10px]">.env</code>.
+          </p>
 
-          <SettingsRow
-            icon={<FolderOpen size={14} />}
-            label="Clone base path"
-            description="Where new repositories land when you clone. Leave blank to use the env default or the home directory."
-            currentValue={current.cloneBasePath}
-            fallbackValue={defaults.cloneBasePath ?? null}
-            fallbackLabel="env / home"
-          >
-            <div className="settings-row-input">
-              <Input value={clonePath} onChange={(event) => setClonePath(event.target.value)} placeholder="/path/to/clones" />
-              {current.cloneBasePath !== null && (
-                <Button variant="ghost" size="icon" onClick={() => void onReset('cloneBasePath')} disabled={busy} aria-label="Reset to default" title="Reset to default"><RotateCcw size={14} /></Button>
-              )}
+          <div className="flex flex-col gap-3 py-3.5 border-t border-[rgba(32,45,58,0.7)]">
+            <div className="min-w-0">
+              <div className="inline-flex items-center gap-1.5 text-fg text-xs font-semibold">
+                <FolderOpen size={14} className="text-accent" />
+                <span>Clone base path</span>
+              </div>
+              <p className="m-0 mt-1 mb-1 text-muted text-[11px] leading-[1.5]">
+                Where new repositories land when you clone. Leave blank to use the env default or the home directory.
+              </p>
+              <p className="m-0 text-subtle font-mono text-[10px]">
+                Current: <strong className="text-fg font-medium">{current.cloneBasePath ?? <em className="not-italic text-muted">unset</em>}</strong>
+                {current.cloneBasePath === null && defaults.cloneBasePath !== null && (
+                  <span className="text-subtle"> ({'env / home'}: {defaults.cloneBasePath})</span>
+                )}
+              </p>
             </div>
-          </SettingsRow>
-
-          <SettingsRow
-            icon={<Save size={14} />}
-            label="Default adapter"
-            description="Which agent the chat opens with. The picker in the agent panel overrides this per session."
-            currentValue={current.defaultAdapterId}
-            fallbackValue={defaults.defaultAdapterId ?? 'pi'}
-            fallbackLabel={statusSource === 'builtin' ? 'built-in pi' : statusSource}
-          >
-            <div className="settings-row-input">
-              <select
-                className="settings-select"
-                value={adapter}
-                onChange={(event) => setAdapter(event.target.value)}
-              >
-                <option value="">Use default</option>
-                {adapters.map((a) => (
-                  <option key={a.id} value={a.id} disabled={!a.installed}>
-                    {a.label}{!a.installed ? ' (not installed)' : ''}
-                  </option>
-                ))}
-              </select>
-              {current.defaultAdapterId !== null && (
-                <Button variant="ghost" size="icon" onClick={() => void onReset('defaultAdapterId')} disabled={busy} aria-label="Reset to default" title="Reset to default"><RotateCcw size={14} /></Button>
-              )}
+            <div className="w-full">
+              <div className="flex gap-1.5 items-center">
+                <Input value={clonePath} onChange={(event) => setClonePath(event.target.value)} placeholder="/path/to/clones" />
+                {current.cloneBasePath !== null && (
+                  <Button variant="ghost" size="icon" onClick={() => void onReset('cloneBasePath')} disabled={busy} aria-label="Reset to default" title="Reset to default">
+                    <RotateCcw size={14} />
+                  </Button>
+                )}
+              </div>
             </div>
-          </SettingsRow>
+          </div>
 
-          <div className="settings-actions">
+          <div className="flex flex-col gap-3 py-3.5 border-t border-[rgba(32,45,58,0.7)]">
+            <div className="min-w-0">
+              <div className="inline-flex items-center gap-1.5 text-fg text-xs font-semibold">
+                <Save size={14} className="text-accent" />
+                <span>Default adapter</span>
+              </div>
+              <p className="m-0 mt-1 mb-1 text-muted text-[11px] leading-[1.5]">
+                Which agent the chat opens with. The picker in the agent panel overrides this per session.
+              </p>
+              <p className="m-0 text-subtle font-mono text-[10px]">
+                Current: <strong className="text-fg font-medium">{current.defaultAdapterId ?? <em className="not-italic text-muted">unset</em>}</strong>
+                {current.defaultAdapterId === null && (
+                  <span className="text-subtle"> ({statusSource === 'builtin' ? 'built-in pi' : statusSource}: {defaults.defaultAdapterId ?? 'pi'})</span>
+                )}
+              </p>
+            </div>
+            <div className="w-full">
+              <div className="flex gap-1.5 items-center">
+                <select
+                  value={adapter}
+                  onChange={(event) => setAdapter(event.target.value)}
+                  className="w-full h-9 px-3 border border-border rounded-md bg-bg text-fg text-[13px] outline-none focus:border-accent/55 focus:shadow-[0_0_0_3px_rgba(141,244,189,0.08)]"
+                >
+                  <option value="">Use default</option>
+                  {adapters.map((a) => (
+                    <option key={a.id} value={a.id} disabled={!a.installed}>
+                      {a.label}{!a.installed ? ' (not installed)' : ''}
+                    </option>
+                  ))}
+                </select>
+                {current.defaultAdapterId !== null && (
+                  <Button variant="ghost" size="icon" onClick={() => void onReset('defaultAdapterId')} disabled={busy} aria-label="Reset to default" title="Reset to default">
+                    <RotateCcw size={14} />
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 pt-4 border-t border-[rgba(32,45,58,0.7)]">
             <Button variant="default" onClick={() => void onSave()} disabled={busy}>
               <Save size={14} /> {busy ? 'Saving…' : 'Save changes'}
             </Button>
-            {saved && <span className="settings-saved"><Check size={13} /> Saved</span>}
+            {saved && <span className="inline-flex items-center gap-1 text-accent text-[11px]"><Check size={13} /> Saved</span>}
           </div>
-          {error && <div className="settings-error">{error}</div>}
+          {error && (
+            <div className="mt-2.5 px-2.5 py-2 border border-danger/25 rounded-md text-danger bg-danger/10 text-[11px]">{error}</div>
+          )}
         </section>
       </ScrollArea>
     </aside>
-  );
-}
-
-interface SettingsRowProps {
-  icon: React.ReactNode;
-  label: string;
-  description: string;
-  currentValue: string | null;
-  fallbackValue: string | null;
-  fallbackLabel: string;
-  children: React.ReactNode;
-}
-
-function SettingsRow({ icon, label, description, currentValue, fallbackValue, fallbackLabel, children }: SettingsRowProps) {
-  return (
-    <div className="settings-row">
-      <div className="settings-row-meta">
-        <div className="settings-row-label">{icon}<span>{label}</span></div>
-        <p className="settings-row-description">{description}</p>
-        <p className="settings-row-source">
-          Current: <strong>{currentValue ?? <em>unset</em>}</strong>
-          {currentValue === null && fallbackValue !== null && <span className="settings-row-fallback"> ({fallbackLabel}: {fallbackValue})</span>}
-        </p>
-      </div>
-      <div className="settings-row-control">{children}</div>
-    </div>
   );
 }

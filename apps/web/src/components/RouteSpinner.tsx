@@ -6,8 +6,12 @@ import { Loader2 } from 'lucide-react';
 
 export function RouteSpinner() {
   return (
-    <div className="route-spinner" role="status" aria-live="polite">
-      <Loader2 size={20} className="spin" />
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex-1 flex items-center justify-center gap-2.5 p-10 text-muted text-xs font-mono"
+    >
+      <Loader2 size={20} className="spin text-accent" />
       <span>Loading…</span>
     </div>
   );
