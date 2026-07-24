@@ -61,14 +61,14 @@ function TopBar({ workspace, onOpen }: { workspace: WorkspaceResult | null; onOp
   return (
     <header className="relative z-[3] h-[62px] shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-[18px] border-b border-border bg-topbar">
       <div className="flex items-center gap-[9px] min-w-0">
-        <div className="w-[29px] h-[29px] grid place-items-center border border-accent/40 rounded-lg text-accent bg-accent-dim shadow-[inset_0_0_18px_rgba(141,244,189,0.06)]">
+        <div className="w-[29px] h-[29px] grid place-items-center border border-accent/40 rounded-lg text-accent bg-accent-dim shadow-[inset_0_0_18px_rgba(141,244,187,0.06)]">
           <Code2 size={18} strokeWidth={2.5} />
         </div>
         <div className="text-[#f2f8fb] text-base font-bold tracking-[-0.04em]">livecoder</div>
-        <span className="w-px h-[17px] mx-[3px] ml-1.5 bg-border-bright" />
-        <span className="text-subtle font-mono text-[10px] tracking-[0.08em] uppercase">workspace</span>
+        <span className="hidden md:inline w-px h-[17px] mx-[3px] ml-1.5 bg-border-bright" />
+        <span className="hidden md:inline text-subtle font-mono text-[10px] tracking-[0.08em] uppercase">workspace</span>
       </div>
-      <div className="flex items-center gap-[7px] max-w-[45vw] text-muted text-xs">
+      <div className="hidden md:flex items-center gap-[7px] max-w-[45vw] text-muted text-xs">
         {workspace ? (
           <>
             <FolderOpen size={14} className="text-accent shrink-0" />
@@ -80,7 +80,7 @@ function TopBar({ workspace, onOpen }: { workspace: WorkspaceResult | null; onOp
         )}
       </div>
       <div className="flex items-center justify-end gap-[7px]">
-        <Badge className="border-accent/17 text-accent bg-accent-dim normal-case tracking-[0.01em] text-[10px]">
+        <Badge className="hidden md:inline-flex border-accent/17 text-accent bg-accent-dim normal-case tracking-[0.01em] text-[10px]">
           <span className="w-1.5 h-1.5 rounded-full bg-accent-strong shadow-[0_0_0_3px_rgba(82,223,160,0.1)]" /> local workspace
         </Badge>
         {workspace ? (
