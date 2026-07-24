@@ -5,14 +5,22 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { ScrollArea } from './ui/scroll-area';
 import { cn } from '../lib/utils';
+import { useWorkspaceStore } from '../workspace-context';
 
-interface GitPanelProps {
-  workspace: string;
-  onCloned?: (path: string) => void;
-  onOpenChange?: () => void;
+export function GitPanel() {
+  const { workspace, openFolder } = useWorkspaceStore();
+  // ponytail: keep all hooks unconditional, then return early. workspacePath is
+  // narrowed to string by the guard below.
+  const workspacePath = workspace?.path ?? null;
+  if (!workspacePath) return <EmptyGitPanel />;
+  return <GitPanelBody workspacePath={workspacePath} openFolder={openFolder} />;
 }
 
-export function GitPanel({ workspace, onCloned, onOpenChange }: GitPanelProps) {
+function EmptyGitPanel() {
+  return <aside className="panel git-panel" aria-hidden="true" />;
+}
+
+function GitPanelBody({ workspacePath, openFolder }: { workspacePath: string; openFolder: (path: string) => Promise<void> }) {
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [log, setLog] = useState<GitCommitInfo[]>([]);
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
@@ -31,15 +39,16 @@ export function GitPanel({ workspace, onCloned, onOpenChange }: GitPanelProps) {
   const [newRemoteUrl, setNewRemoteUrl] = useState('');
 
   const refresh = useCallback(async () => {
+    if (!workspacePath) return;
     setLoading(true);
     setError(null);
     try {
       const [next, nextLog, nextBranches, nextTags, nextRemotes] = await Promise.all([
-        git.status(workspace),
-        git.log(workspace, 30),
-        git.branches(workspace),
-        git.tags(workspace),
-        git.remotes(workspace),
+        git.status(workspacePath),
+        git.log(workspacePath, 30),
+        git.branches(workspacePath),
+        git.tags(workspacePath),
+        git.remotes(workspacePath),
       ]);
       setStatus(next);
       setLog(nextLog);
@@ -54,7 +63,7 @@ export function GitPanel({ workspace, onCloned, onOpenChange }: GitPanelProps) {
     } finally {
       setLoading(false);
     }
-  }, [workspace, selectedFile]);
+  }, [workspacePath, selectedFile]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -73,43 +82,44 @@ export function GitPanel({ workspace, onCloned, onOpenChange }: GitPanelProps) {
 
   const onCommit = () => {
     if (!commitMessage.trim()) return;
-    void runOp('commit', () => git.commit(workspace, commitMessage.trim(), true).then(() => setCommitMessage('')));
+    void runOp('commit', () => git.commit(workspacePath, commitMessage.trim(), true).then(() => setCommitMessage('')));
   };
 
-  const onPush = () => runOp('push', () => git.push(workspace, { setUpstream: !status?.upstream }));
-  const onPull = () => runOp('pull', () => git.pull(workspace));
-  const onFetch = () => runOp('fetch', () => git.fetch(workspace, { prune: true }));
+  const onPush = () => runOp('push', () => git.push(workspacePath, { setUpstream: !status?.upstream }));
+  const onPull = () => runOp('pull', () => git.pull(workspacePath));
+  const onFetch = () => runOp('fetch', () => git.fetch(workspacePath, { prune: true }));
 
-  const onCheckout = (branch: string) => runOp(`checkout ${branch}`, () => git.checkout(workspace, branch));
+  const onCheckout = (branch: string) => runOp(`checkout ${branch}`, () => git.checkout(workspacePath, branch));
   const onCreateBranch = () => {
     if (!newBranch.trim()) return;
     const name = newBranch.trim();
-    void runOp(`create ${name}`, () => git.checkout(workspace, name, true).then(() => setNewBranch('')));
+    void runOp(`create ${name}`, () => git.checkout(workspacePath, name, true).then(() => setNewBranch('')));
   };
-  const onDeleteBranch = (branch: string) => runOp(`delete ${branch}`, () => git.deleteBranch(workspace, branch, true));
+  const onDeleteBranch = (branch: string) => runOp(`delete ${branch}`, () => git.deleteBranch(workspacePath, branch, true));
 
   const onCreateTag = () => {
     if (!newTagName.trim()) return;
     const name = newTagName.trim();
     const message = newTagMessage.trim() || undefined;
-    void runOp(`tag ${name}`, () => git.createTag(workspace, name, message).then(() => {
+    void runOp(`tag ${name}`, () => git.createTag(workspacePath, name, message).then(() => {
       setNewTagName('');
       setNewTagMessage('');
     }));
   };
-  const onDeleteTag = (name: string) => runOp(`delete tag ${name}`, () => git.deleteTag(workspace, name));
+  const onDeleteTag = (name: string) => runOp(`delete tag ${name}`, () => git.deleteTag(workspacePath, name));
 
   const onAddRemote = () => {
     if (!newRemoteName.trim() || !newRemoteUrl.trim()) return;
     const name = newRemoteName.trim();
     const url = newRemoteUrl.trim();
-    void runOp(`add remote ${name}`, () => git.addRemote(workspace, name, url).then(() => {
+    void runOp(`add remote ${name}`, () => git.addRemote(workspacePath, name, url).then(() => {
       setNewRemoteName('');
       setNewRemoteUrl('');
     }));
   };
-  const onRemoveRemote = (name: string) => runOp(`remove remote ${name}`, () => git.removeRemote(workspace, name));
+  const onRemoveRemote = (name: string) => runOp(`remove remote ${name}`, () => git.removeRemote(workspacePath, name));
 
+  if (!workspacePath) return null;
   return (
     <aside className="panel git-panel">
       <div className="git-header">
@@ -132,7 +142,6 @@ export function GitPanel({ workspace, onCloned, onOpenChange }: GitPanelProps) {
         <Button variant="secondary" size="sm" onClick={onPull} disabled={busy !== null}><ArrowDownToLine size={14} /> Pull</Button>
         <Button variant="ghost" size="sm" onClick={onFetch} disabled={busy !== null}><RefreshCw size={14} /> Fetch</Button>
         <Button variant="ghost" size="sm" onClick={() => setShowClone(true)}><GitFork size={14} /> Clone</Button>
-        {onOpenChange && <Button variant="ghost" size="sm" onClick={onOpenChange}>Switch</Button>}
       </div>
 
       <div className="git-status-row">
@@ -171,7 +180,7 @@ export function GitPanel({ workspace, onCloned, onOpenChange }: GitPanelProps) {
                   </span>
                 </button>
                 <div className="git-file-actions">
-                  <button type="button" onClick={() => void runOp(`stage ${file.path}`, () => git.stage(workspace, [file.path]))} title="Stage"><Plus size={12} /></button>
+                  <button type="button" onClick={() => void runOp(`stage ${file.path}`, () => git.stage(workspacePath, [file.path]))} title="Stage"><Plus size={12} /></button>
                 </div>
               </li>
             ))}
@@ -273,14 +282,10 @@ export function GitPanel({ workspace, onCloned, onOpenChange }: GitPanelProps) {
           </ul>
         </section>
       </ScrollArea>
-
       {showClone && (
         <CloneDialog
           onClose={() => setShowClone(false)}
-          onCloned={(result) => {
-            setShowClone(false);
-            onCloned?.(result.path);
-          }}
+          onCloned={(result) => { setShowClone(false); void openFolder(result.path); }}
         />
       )}
     </aside>
