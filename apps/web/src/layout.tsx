@@ -8,8 +8,10 @@ import { lazy, Suspense } from 'react';
 import { Outlet, Link, useRouterState } from '@tanstack/react-router';
 import { routeWithWorkspace } from './router';
 import {
+  ChevronDown,
   Code2,
   FolderOpen,
+  FolderPlus,
   GitBranch,
   MessageSquare,
   PanelLeft,
@@ -18,7 +20,14 @@ import {
 import type { WorkspaceResult } from './api';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
-import { RouteSpinner } from './components/RouteSpinner';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './components/ui/dropdown-menu';
 import { WorkspaceProvider, useWorkspaceStore } from './workspace-context';
 
 const WorkspacePicker = lazy(() =>
@@ -34,7 +43,7 @@ export function Layout() {
 }
 
 function AppShell() {
-  const { workspace, pickerOpen, setPickerOpen, openFolder } = useWorkspaceStore();
+  const { workspace, pickerOpen, setPickerOpen, openFolder, recentWorkspaces } = useWorkspaceStore();
 
   return (
     <div
@@ -43,8 +52,19 @@ function AppShell() {
         (workspace ? 'bg-bg' : 'bg-empty-bg')
       }
     >
-      <TopBar workspace={workspace} onOpen={() => setPickerOpen(true)} />
-      <Outlet />
+      <TopBar
+        workspace={workspace}
+        recentWorkspaces={recentWorkspaces}
+        onOpen={() => setPickerOpen(true)}
+        onSelect={(path) => void openFolder(path)}
+      />
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <Outlet />
+        </div>
+        {/* ponytail: spacer keeps scroll/layout above fixed mobile nav */}
+        <div className="h-[59px] shrink-0 md:hidden" aria-hidden="true" />
+      </div>
       <MobileNav />
       <Suspense fallback={null}>
         <WorkspacePicker
@@ -58,7 +78,17 @@ function AppShell() {
   );
 }
 
-function TopBar({ workspace, onOpen }: { workspace: WorkspaceResult | null; onOpen: () => void }) {
+function TopBar({
+  workspace,
+  recentWorkspaces,
+  onOpen,
+  onSelect,
+}: {
+  workspace: WorkspaceResult | null;
+  recentWorkspaces: { path: string; name: string }[];
+  onOpen: () => void;
+  onSelect: (path: string) => void;
+}) {
   return (
     <header className="relative z-[3] h-[62px] shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-[18px] border-b border-border bg-topbar">
       <div className="flex items-center gap-[9px] min-w-0">
@@ -84,14 +114,40 @@ function TopBar({ workspace, onOpen }: { workspace: WorkspaceResult | null; onOp
         <Badge className="hidden md:inline-flex border-accent/17 text-accent bg-accent-dim normal-case tracking-[0.01em] text-[10px]">
           <span className="w-1.5 h-1.5 rounded-full bg-accent-strong shadow-[0_0_0_3px_rgba(82,223,160,0.1)]" /> local workspace
         </Badge>
-        {workspace ? (
-          <Button variant="ghost" size="icon" onClick={onOpen} aria-label="Change workspace" title="Change workspace">
-            <FolderOpen size={17} />
-          </Button>
-        ) : (
+        {recentWorkspaces.length === 0 ? (
           <Button variant="outline" size="sm" onClick={onOpen}>
             <FolderOpen size={15} /> Open folder
           </Button>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="max-w-[220px]">
+                <FolderOpen size={15} />
+                <span className="min-w-0 truncate">{workspace?.name ?? 'Workspaces'}</span>
+                <ChevronDown size={14} className="opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[240px] max-w-[360px]">
+              <DropdownMenuLabel className="text-subtle font-mono text-[10px] tracking-[0.08em] uppercase">
+                Workspaces
+              </DropdownMenuLabel>
+              {recentWorkspaces.map((item) => (
+                <DropdownMenuItem
+                  key={item.path}
+                  disabled={item.path === workspace?.path}
+                  onSelect={() => onSelect(item.path)}
+                  className="flex flex-col items-start gap-0.5 py-2"
+                >
+                  <span className="text-fg text-sm font-medium">{item.name}</span>
+                  <span className="max-w-full truncate text-subtle font-mono text-[10px]">{item.path}</span>
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onOpen}>
+                <FolderPlus size={15} /> Open folder…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
       </div>
     </header>
@@ -114,7 +170,7 @@ function MobileNav() {
   ];
 
   return (
-    <nav className="md:hidden h-[59px] shrink-0 flex items-stretch justify-around border-t border-border bg-mobile-nav pb-[env(safe-area-inset-bottom)]">
+    <nav className="md:hidden fixed bottom-0 inset-x-0 z-[4] h-[59px] flex items-stretch justify-around border-t border-border bg-mobile-nav pb-[env(safe-area-inset-bottom)]">
       {tabs.map((tab) => {
         // ponytail: Settings stays reachable even without an open workspace
         // so the user can fix a misconfigured path without first opening
