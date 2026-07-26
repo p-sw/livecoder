@@ -14,7 +14,6 @@ import {
   resolveAdapterCommand,
   type AdapterSpec,
 } from './adapter-registry.js';
-
 export type AgentEvent =
   | { type: 'status'; status: 'connecting' | 'ready' | 'thinking' | 'complete'; message?: string }
   | { type: 'text'; text: string; messageId?: string }
@@ -54,6 +53,7 @@ export interface SessionInfo {
   title?: string;
   updatedAt?: string;
   active: boolean;
+  busy?: boolean;
 }
 
 type Emit = (event: AgentEvent) => void;
@@ -74,18 +74,26 @@ export class AgentService implements OnModuleDestroy {
     await runtime.prompt(text, emit, sessionId);
   }
 
-  async listSessions(workspace: string): Promise<{ sessions: SessionInfo[]; activeSessionId: string | null; adapter: string }> {
+  async listSessions(workspace: string): Promise<{ sessions: SessionInfo[]; activeSessionId: string | null; busySessionId: string | null; adapter: string }> {
     const adapter = this.resolveAdapter();
     const key = runtimeKey(adapter.id, workspace);
     const existing = this.runtimes.get(key);
     if (!existing) {
       // Runtime not up yet — still surface disk sessions so the picker shows on first open.
       const sessions = await listPersistedSessions(workspace);
-      return { sessions, activeSessionId: null, adapter: adapter.id };
+      return { sessions, activeSessionId: null, busySessionId: null, adapter: adapter.id };
     }
     const runtime = await existing;
     const sessions = await runtime.listSessions();
-    return { sessions, activeSessionId: runtime.activeSessionId, adapter: adapter.id };
+    const busySessionId = runtime.busySessionId();
+    return {
+      sessions: sessions.map((session) => (
+        session.sessionId === busySessionId ? { ...session, busy: true } : session
+      )),
+      activeSessionId: runtime.activeSessionId,
+      busySessionId,
+      adapter: adapter.id,
+    };
   }
 
   async createSession(workspace: string, emit: Emit): Promise<{ sessionId: string }> {
@@ -94,9 +102,10 @@ export class AgentService implements OnModuleDestroy {
     return { sessionId };
   }
 
+  // ponytail: load history (or replay server log) then attach to in-flight turn if any.
   async loadSession(workspace: string, sessionId: string, emit: Emit): Promise<void> {
     const runtime = await this.getRuntime(workspace, emit);
-    await runtime.loadSession(sessionId, emit);
+    await runtime.openSession(sessionId, emit);
   }
 
   async closeSession(workspace: string, sessionId: string): Promise<void> {
@@ -203,7 +212,11 @@ export class AgentService implements OnModuleDestroy {
 
 class AcpRuntime {
   private queue: Promise<void> = Promise.resolve();
-  private activePrompt: { sessionId: string } | null = null;
+  // ponytail: fan-out + ring of turn events so a tab can reconnect mid-flight.
+  private activePrompt: { sessionId: string; listeners: Set<Emit> } | null = null;
+  // Accumulates history/turn events for the active session while this runtime lives.
+  private sessionEvents: AgentEvent[] = [];
+  private sessionEventsId: string | null = null;
   private exitHandlers: Array<() => void> = [];
   private dead = false;
   activeSessionId: string | null = null;
@@ -301,8 +314,8 @@ class AcpRuntime {
       }, turnGate);
       runtimeHolder.current = runtime;
 
-      // Create the first session so the first prompt has somewhere to go.
-      await runtime.newSession(emit);
+      // ponytail: no session until prompt/create/load — start used to
+      // session/new here and every agent-tab open left an empty junk session.
       emit({ type: 'status', status: 'ready', message: `${adapter.label} is ready` });
       return runtime;
     } catch (error) {
@@ -336,16 +349,69 @@ class AcpRuntime {
     }
     const session = await this.connection.newSession({ cwd: this.cwd, mcpServers: [] });
     this.activeSessionId = session.sessionId;
+    this.sessionEventsId = session.sessionId;
+    this.sessionEvents = [];
     emit({ type: 'session', sessionId: session.sessionId });
     return session.sessionId;
   }
 
-  async loadSession(sessionId: string, emit: Emit): Promise<void> {
+  busySessionId(): string | null {
+    return this.activePrompt?.sessionId ?? null;
+  }
+
+  // Replay server-side log when we have it; otherwise ACP load. Then tail in-flight turn.
+  async openSession(sessionId: string, emit: Emit): Promise<void> {
+    this.assertAlive();
+    if (this.activePrompt && this.activePrompt.sessionId !== sessionId) {
+      throw new Error('Agent is busy with another session');
+    }
+
+    // In-flight turn owns the update queue — only replay the RAM log + follow.
+    if (this.activePrompt?.sessionId === sessionId) {
+      const from = this.sessionEventsId === sessionId ? this.sessionEvents.length : 0;
+      if (this.sessionEventsId === sessionId) {
+        for (let i = 0; i < from; i += 1) {
+          const event = this.sessionEvents[i];
+          if (event.type === 'done') continue;
+          emit(event);
+        }
+      }
+      emit({ type: 'session', sessionId });
+      emit({ type: 'status', status: 'thinking' });
+      await this.followTurn(emit, from);
+      return;
+    }
+
+    if (this.sessionEventsId === sessionId && this.sessionEvents.length > 0) {
+      for (const event of this.sessionEvents) {
+        if (event.type === 'done') continue;
+        emit(event);
+      }
+      emit({ type: 'session', sessionId });
+      emit({ type: 'status', status: 'ready', message: 'Session restored' });
+      emit({ type: 'done' });
+      return;
+    }
+
+    await this.loadSession(sessionId, (event) => {
+      if (event.type === 'done') return;
+      emit(event);
+    });
+    emit({ type: 'done' });
+  }
+
+  private async loadSession(sessionId: string, emit: Emit): Promise<void> {
     this.assertAlive();
     if (!this.capabilities.loadSession) {
       throw new Error(`${this.adapter.label} does not support loading sessions`);
     }
     emit({ type: 'status', status: 'connecting', message: 'Loading session…' });
+    this.sessionEventsId = sessionId;
+    this.sessionEvents = [];
+    const record: Emit = (event) => {
+      this.sessionEvents.push(event);
+      emit(event);
+    };
     this.turnGate.enter();
     this.updates.clear();
     try {
@@ -357,14 +423,13 @@ class AcpRuntime {
       // Replay history while loadSession streams session/update notifications.
       const replay = this.drainUntil(loadPromise, (update) => {
         const event = mapHistoryUpdate(update);
-        if (event) emit(event);
+        if (event) record(event);
       });
       await loadPromise;
       await replay;
       this.activeSessionId = sessionId;
-      emit({ type: 'session', sessionId });
-      emit({ type: 'status', status: 'ready', message: 'Session loaded' });
-      emit({ type: 'done' });
+      record({ type: 'session', sessionId });
+      record({ type: 'status', status: 'ready', message: 'Session loaded' });
     } finally {
       this.turnGate.leave();
       this.updates.clear();
@@ -413,6 +478,10 @@ class AcpRuntime {
     // ponytail: omp/pi listSessions reads disk; close only drops RAM. Wipe files so delete sticks.
     await deletePersistedSession(this.cwd, sessionId);
     if (this.activeSessionId === sessionId) this.activeSessionId = null;
+    if (this.sessionEventsId === sessionId) {
+      this.sessionEventsId = null;
+      this.sessionEvents = [];
+    }
   }
 
   async cancel(sessionId?: string): Promise<void> {
@@ -449,12 +518,26 @@ class AcpRuntime {
     let id = sessionId ?? this.activeSessionId;
     if (!id) id = await this.newSession(emit);
     this.activeSessionId = id;
-    emit({ type: 'session', sessionId: id });
-    emit({ type: 'status', status: 'thinking' });
+    if (this.sessionEventsId !== id) {
+      this.sessionEventsId = id;
+      this.sessionEvents = [];
+    }
+
+    const turn = { sessionId: id, listeners: new Set<Emit>() };
+    this.activePrompt = turn;
+    const broadcast: Emit = (event) => {
+      this.sessionEvents.push(event);
+      emit(event);
+      for (const listener of turn.listeners) listener(event);
+    };
+
+    broadcast({ type: 'session', sessionId: id });
+    // so reconnect replays the user line without an ACP history reload
+    broadcast({ type: 'history', role: 'user', text });
+    broadcast({ type: 'status', status: 'thinking' });
 
     this.turnGate.enter();
     this.updates.clear();
-    this.activePrompt = { sessionId: id };
     try {
       const responsePromise = this.connection.prompt({
         sessionId: id,
@@ -469,23 +552,64 @@ class AcpRuntime {
         const item = await this.updates.next();
         if (item.kind === 'error') {
           this.markDead();
-          throw item.value instanceof Error ? item.value : new Error(String(item.value));
+          const message = item.value instanceof Error ? item.value.message : String(item.value);
+          broadcast({ type: 'error', message });
+          broadcast({ type: 'done' });
+          throw item.value instanceof Error ? item.value : new Error(message);
         }
         if (item.kind === 'stop') {
-          emit({ type: 'status', status: 'complete' });
-          emit({ type: 'done', stopReason: item.value.stopReason });
+          broadcast({ type: 'status', status: 'complete' });
+          broadcast({ type: 'done', stopReason: item.value.stopReason });
           return;
         }
         // Only surface updates for the active session.
         if (item.value.sessionId && item.value.sessionId !== id) continue;
         const event = mapUpdate(item.value.update);
-        if (event) emit(event);
+        if (event) broadcast(event);
       }
     } finally {
       this.activePrompt = null;
+      turn.listeners.clear();
       this.turnGate.leave();
       this.updates.clear();
     }
+  }
+
+  // ponytail: follower pumps sessionEvents from `from` so attach can't skip/dup.
+  private followTurn(emit: Emit, from: number): Promise<void> {
+    const turn = this.activePrompt;
+    if (!turn) {
+      emit({ type: 'done' });
+      return Promise.resolve();
+    }
+    const { promise, resolve } = Promise.withResolvers<void>();
+    let index = from;
+    const pump = (): boolean => {
+      while (index < this.sessionEvents.length) {
+        const event = this.sessionEvents[index];
+        index += 1;
+        emit(event);
+        if (event.type === 'done' || event.type === 'error') {
+          turn.listeners.delete(onNotify);
+          resolve();
+          return true;
+        }
+      }
+      return false;
+    };
+    const onNotify: Emit = () => {
+      pump();
+    };
+    turn.listeners.add(onNotify);
+    if (pump()) return promise;
+    if (this.activePrompt !== turn) {
+      turn.listeners.delete(onNotify);
+      if (!pump()) {
+        emit({ type: 'done' });
+        resolve();
+      }
+    }
+    return promise;
   }
 
   private async drainUntil(done: Promise<unknown>, onUpdate: (update: acp.SessionUpdate) => void): Promise<void> {
