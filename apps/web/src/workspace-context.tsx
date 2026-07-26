@@ -16,6 +16,7 @@ import {
 import { relativePath } from './lib/utils';
 import { readWorkspaceFromUrl, routeWithWorkspace } from './router';
 import {
+  agentSessions,
   agentStatus,
   listEntries,
   openWorkspace,
@@ -23,22 +24,135 @@ import {
   saveFile,
   streamAgentMessage,
   API_ROOT,
-  type AdapterInfo,
   type AgentEvent,
   type FileEntry,
+  type SessionInfo,
   type WorkspaceResult,
 } from './api';
 
+
+// ponytail: recent workspaces are just path+name in localStorage — no server.
+const RECENT_KEY = 'livecoder.workspaces';
+
+export interface RecentWorkspace {
+  path: string;
+  name: string;
+}
+
+function readRecent(): RecentWorkspace[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is RecentWorkspace =>
+        !!item && typeof item === 'object' && typeof (item as RecentWorkspace).path === 'string' && typeof (item as RecentWorkspace).name === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function rememberWorkspace(ws: RecentWorkspace): RecentWorkspace[] {
+  const next = [ws, ...readRecent().filter((item) => item.path !== ws.path)].slice(0, 12);
+  localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  return next;
+}
 type AgentConnection = 'idle' | 'connecting' | 'ready' | 'thinking' | 'error';
 
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'tool';
+  role: 'user' | 'assistant' | 'tool' | 'thought';
   text: string;
   toolId?: string;
   toolStatus?: string;
+  toolDetail?: string;
   streaming?: boolean;
 }
+
+// ponytail: one reducer for live stream + session replay so reload keeps
+// multi-bubble tool/thought splits instead of collapsing to one text blob.
+type BubbleCursor = {
+  activeId: string | null;
+  activeMessageId: string | undefined;
+  activeRole: 'assistant' | 'thought' | null;
+};
+
+function newBubbleCursor(): BubbleCursor {
+  return { activeId: null, activeMessageId: undefined, activeRole: null };
+}
+
+function finishActiveBubble(messages: ChatMessage[], cursor: BubbleCursor): ChatMessage[] {
+  if (!cursor.activeId) return messages;
+  const id = cursor.activeId;
+  cursor.activeId = null;
+  cursor.activeMessageId = undefined;
+  cursor.activeRole = null;
+  return messages.map((message) => (message.id === id && message.streaming ? { ...message, streaming: false } : message));
+}
+
+function appendRoleBubble(
+  messages: ChatMessage[],
+  cursor: BubbleCursor,
+  role: 'assistant' | 'thought',
+  chunk: string,
+  messageId: string | undefined,
+  streaming: boolean,
+): ChatMessage[] {
+  const sameMessage = !messageId || !cursor.activeMessageId || cursor.activeMessageId === messageId;
+  if (cursor.activeId && cursor.activeRole === role && sameMessage) {
+    if (messageId) cursor.activeMessageId = messageId;
+    const id = cursor.activeId;
+    return messages.map((message) => (
+      message.id === id ? { ...message, text: `${message.text}${chunk}`, streaming } : message
+    ));
+  }
+  let next = finishActiveBubble(messages, cursor);
+  const id = `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  cursor.activeId = id;
+  cursor.activeMessageId = messageId;
+  cursor.activeRole = role;
+  return [...next, { id, role, text: chunk, streaming }];
+}
+
+function upsertToolBubble(messages: ChatMessage[], cursor: BubbleCursor, event: Extract<AgentEvent, { type: 'tool' }>): ChatMessage[] {
+  let next = finishActiveBubble(messages, cursor);
+  const found = next.some((message) => message.toolId === event.id);
+  if (found) {
+    return next.map((message) => message.toolId === event.id
+      ? {
+          ...message,
+          text: event.title ?? message.text,
+          toolStatus: event.status ?? message.toolStatus,
+          toolDetail: event.detail ?? message.toolDetail,
+        }
+      : message);
+  }
+  return [...next, {
+    id: `tool-${event.id}`,
+    role: 'tool' as const,
+    text: event.title ?? 'Tool',
+    toolId: event.id,
+    toolStatus: event.status,
+    toolDetail: event.detail,
+  }];
+}
+
+function applyChatEvent(
+  messages: ChatMessage[],
+  cursor: BubbleCursor,
+  event: AgentEvent,
+  streaming: boolean,
+): ChatMessage[] {
+  if (event.type === 'text') return appendRoleBubble(messages, cursor, 'assistant', event.text, event.messageId, streaming);
+  if (event.type === 'thought') return appendRoleBubble(messages, cursor, 'thought', event.text, event.messageId, streaming);
+  if (event.type === 'tool') return upsertToolBubble(messages, cursor, event);
+  if (event.type === 'error') return appendRoleBubble(messages, cursor, 'assistant', `\n\n${event.message}`, undefined, streaming);
+  if (event.type === 'done') return finishActiveBubble(messages, cursor);
+  return messages;
+}
+
 
 const WELCOME_MESSAGE: ChatMessage = {
   id: 'welcome',
@@ -51,6 +165,7 @@ export interface WorkspaceStore {
   pickerOpen: boolean;
   setPickerOpen: (open: boolean) => void;
   openFolder: (path: string) => Promise<void>;
+  recentWorkspaces: RecentWorkspace[];
   loadWorkspace: (path: string) => Promise<void>;
 
   selectedFile: FileEntry | null;
@@ -76,11 +191,15 @@ export interface WorkspaceStore {
   agentConnection: AgentConnection;
   agentConfigured: boolean | null;
   agentBusy: boolean;
-  adapters: AdapterInfo[];
   activeAdapter: string | null;
+  agentSessionsList: SessionInfo[];
+  activeSessionId: string | null;
   setChatInput: (value: string) => void;
-  setActiveAdapter: (id: string) => void;
   sendChat: (value?: string) => Promise<void>;
+  newAgentSession: () => Promise<void>;
+  loadAgentSession: (sessionId: string) => Promise<void>;
+  closeAgentSession: (sessionId?: string) => Promise<void>;
+  refreshAgentSessions: () => Promise<void>;
 }
 
 const StoreContext = createContext<WorkspaceStore | null>(null);
@@ -88,6 +207,7 @@ const StoreContext = createContext<WorkspaceStore | null>(null);
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspace, setWorkspace] = useState<WorkspaceResult | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [recentWorkspaces, setRecentWorkspaces] = useState<RecentWorkspace[]>(() => readRecent());
   const [selectedFile, setSelectedFile] = useState<FileEntry | null>(null);
   const [entries, setEntries] = useState<Record<string, FileEntry[]>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -101,8 +221,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [agentConnection, setAgentConnection] = useState<AgentConnection>('idle');
   const [agentConfigured, setAgentConfigured] = useState<boolean | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
-  const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
   const [activeAdapter, setActiveAdapter] = useState<string | null>(null);
+  const [agentSessionsList, setAgentSessionsList] = useState<SessionInfo[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   const fileRequest = useRef(0);
   const selectedRef = useRef<FileEntry | null>(null);
@@ -128,6 +249,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     url.searchParams.set('workspace', result.path);
     window.history.replaceState(window.history.state, '', url);
     setWorkspace(result);
+    setRecentWorkspaces(rememberWorkspace({ path: result.path, name: result.name }));
     setEntries({ [result.path]: result.entries });
     setExpanded({});
     setFilter('');
@@ -137,6 +259,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setChatMessages([WELCOME_MESSAGE]);
     setAgentConfigured(null);
     setAgentConnection('idle');
+    setAgentSessionsList([]);
+    setActiveSessionId(null);
     setPickerOpen(false);
   }, [fileDirty]);
 
@@ -146,6 +270,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const loadWorkspace = useCallback(async (path: string) => {
     const result = await openWorkspace(path);
     setWorkspace(result);
+    setRecentWorkspaces(rememberWorkspace({ path: result.path, name: result.name }));
     setEntries({ [result.path]: result.entries });
     setExpanded({});
     setFilter('');
@@ -155,6 +280,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setChatMessages([WELCOME_MESSAGE]);
     setAgentConfigured(null);
     setAgentConnection('idle');
+    setAgentSessionsList([]);
+    setActiveSessionId(null);
     setPickerOpen(false);
   }, []);
 
@@ -296,72 +423,166 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       .then((result) => {
         setAgentConfigured(result.configured);
         setAgentConnection(result.configured ? 'ready' : 'idle');
-        setAdapters(result.adapters);
         setActiveAdapter(result.adapter);
+        setActiveSessionId(result.activeSessionId);
       })
       .catch(() => setAgentConfigured(false));
   }, [workspace]);
 
+  const refreshAgentSessions = useCallback(async () => {
+    if (!workspace) return;
+    try {
+      const result = await agentSessions.list(workspace.path);
+      setAgentSessionsList(result.sessions);
+      setActiveSessionId(result.activeSessionId);
+      setActiveAdapter(result.adapter);
+    } catch {
+      // Runtime may not be up yet — empty list is fine.
+      setAgentSessionsList([]);
+    }
+  }, [workspace]);
+
   const sendChat = useCallback(async (value?: string) => {
     const text = (value ?? chatInput).trim();
-    const assistantId = `assistant-${Date.now()}`;
+    if (!text || agentBusy || !workspace) return;
+    setChatInput('');
     setChatMessages((current) => [
       ...current,
       { id: `user-${Date.now()}`, role: 'user', text },
-      { id: assistantId, role: 'assistant', text: '', streaming: true },
     ]);
     setAgentBusy(true);
     setAgentConnection('connecting');
 
-    const updateAssistant = (append: string) => {
-      setChatMessages((current) => current.map((message) => (
-        message.id === assistantId ? { ...message, text: `${message.text}${append}` } : message
-      )));
-    };
-
+    const cursor = newBubbleCursor();
     const handleEvent = (event: AgentEvent) => {
-      if (event.type === 'text') updateAssistant(event.text);
-      if (event.type === 'thought') return;
-      if (event.type === 'tool') {
-        setChatMessages((current) => {
-          const found = current.some((message) => message.toolId === event.id);
-          if (found) {
-            return current.map((message) => message.toolId === event.id
-              ? { ...message, text: event.title, toolStatus: event.status }
-              : message);
-          }
-          return [...current, {
-            id: `tool-${event.id}`,
-            role: 'tool',
-            text: event.title,
-            toolId: event.id,
-            toolStatus: event.status,
-          }];
-        });
-      }
       if (event.type === 'status') {
         setAgentConnection(event.status === 'thinking' ? 'thinking' : event.status === 'connecting' ? 'connecting' : 'ready');
       }
-      if (event.type === 'error') {
-        updateAssistant(`\n\n${event.message}`);
-        setAgentConnection('error');
-      }
-      if (event.type === 'done') {
-        setChatMessages((current) => current.map((message) => message.id === assistantId ? { ...message, streaming: false } : message));
-      }
+      if (event.type === 'session') setActiveSessionId(event.sessionId);
+      if (event.type === 'error') setAgentConnection('error');
+      setChatMessages((current) => applyChatEvent(current, cursor, event, true));
     };
-    if (!workspace) return;
     try {
       const context = selectedFile ? `\n\nThe user is currently viewing ${relativePath(selectedFile.path, workspace.path)}.` : '';
-      await streamAgentMessage(workspace.path, `${text}${context}`, handleEvent, activeAdapter ?? undefined);
+      await streamAgentMessage(workspace.path, `${text}${context}`, handleEvent, activeSessionId ?? undefined);
+      void refreshAgentSessions();
     } catch (error) {
-      updateAssistant(`Unable to reach Pi ACP. ${error instanceof Error ? error.message : String(error)}`);
+      setChatMessages((current) => applyChatEvent(
+        current,
+        cursor,
+        { type: 'error', message: `Unable to reach agent ACP. ${error instanceof Error ? error.message : String(error)}` },
+        true,
+      ));
       setAgentConnection('error');
     } finally {
-      setChatMessages((current) => current.map((message) => message.id === assistantId ? { ...message, streaming: false } : message));
+      setChatMessages((current) => finishActiveBubble(current, cursor));
       setAgentBusy(false);
     }
-  }, [agentBusy, chatInput, selectedFile, workspace, activeAdapter]);
+  }, [agentBusy, chatInput, selectedFile, workspace, activeSessionId, refreshAgentSessions]);
+
+  const newAgentSession = useCallback(async () => {
+    if (!workspace || agentBusy) return;
+    setAgentBusy(true);
+    setChatMessages([WELCOME_MESSAGE]);
+    setAgentConnection('connecting');
+    try {
+      await agentSessions.create(workspace.path, (event) => {
+        if (event.type === 'session') setActiveSessionId(event.sessionId);
+        if (event.type === 'status') {
+          setAgentConnection(event.status === 'connecting' ? 'connecting' : 'ready');
+        }
+        if (event.type === 'error') setAgentConnection('error');
+      });
+      setAgentConnection('ready');
+      void refreshAgentSessions();
+    } catch (error) {
+      setAgentConnection('error');
+      setChatMessages([{
+        id: `error-${Date.now()}`,
+        role: 'assistant',
+        text: `Could not create session. ${error instanceof Error ? error.message : String(error)}`,
+      }]);
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [workspace, agentBusy, refreshAgentSessions]);
+
+  const loadAgentSession = useCallback(async (sessionId: string) => {
+    if (!workspace || agentBusy) return;
+    setAgentBusy(true);
+    setChatMessages([]);
+    setAgentConnection('connecting');
+    let history: ChatMessage[] = [];
+    const cursor = newBubbleCursor();
+    try {
+      await agentSessions.load(workspace.path, sessionId, (event) => {
+        if (event.type === 'history') {
+          history = finishActiveBubble(history, cursor);
+          const last = history[history.length - 1];
+          if (last?.role === 'user') {
+            history = history.map((message, index) => (
+              index === history.length - 1 ? { ...message, text: message.text + event.text } : message
+            ));
+          } else {
+            history = [...history, { id: `user-${history.length}`, role: 'user', text: event.text }];
+          }
+          setChatMessages(history);
+          return;
+        }
+        if (event.type === 'session') setActiveSessionId(event.sessionId);
+        if (event.type === 'status') {
+          setAgentConnection(event.status === 'connecting' ? 'connecting' : 'ready');
+        }
+        if (event.type === 'error') setAgentConnection('error');
+        history = applyChatEvent(history, cursor, event, false);
+        setChatMessages(history);
+      });
+      history = finishActiveBubble(history, cursor);
+      setChatMessages(history.length === 0 ? [WELCOME_MESSAGE] : history);
+      setActiveSessionId(sessionId);
+      setAgentConnection('ready');
+      void refreshAgentSessions();
+    } catch (error) {
+      setAgentConnection('error');
+      setChatMessages([{
+        id: `error-${Date.now()}`,
+        role: 'assistant',
+        text: `Could not load session. ${error instanceof Error ? error.message : String(error)}`,
+      }]);
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [workspace, agentBusy, refreshAgentSessions]);
+
+  // ponytail: close = drop ACP session + local chat; next message spins a new one
+  const closeAgentSession = useCallback(async (sessionId?: string) => {
+    if (!workspace || agentBusy) return;
+    const id = sessionId ?? activeSessionId;
+    if (!id) {
+      setChatMessages([WELCOME_MESSAGE]);
+      return;
+    }
+    setAgentBusy(true);
+    try {
+      await agentSessions.close(workspace.path, id);
+      if (activeSessionId === id) {
+        setActiveSessionId(null);
+        setChatMessages([WELCOME_MESSAGE]);
+      }
+      await refreshAgentSessions();
+    } catch (error) {
+      setChatMessages((current) => [
+        ...current,
+        {
+          id: `error-${Date.now()}`,
+          role: 'assistant',
+          text: `Could not delete session. ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ]);
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [workspace, agentBusy, activeSessionId, refreshAgentSessions]);
 
   const visibleEntries = useMemo(() => {
     if (!workspace) return [];
@@ -375,6 +596,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     pickerOpen,
     setPickerOpen,
     openFolder,
+    recentWorkspaces,
     loadWorkspace,
     selectedFile,
     entries,
@@ -398,11 +620,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     agentConnection,
     agentConfigured,
     agentBusy,
-    adapters,
     activeAdapter,
+    agentSessionsList,
+    activeSessionId,
     setChatInput,
-    setActiveAdapter,
     sendChat,
+    newAgentSession,
+    loadAgentSession,
+    closeAgentSession,
+    refreshAgentSessions,
   };
 
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;
