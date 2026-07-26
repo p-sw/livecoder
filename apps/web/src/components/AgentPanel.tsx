@@ -46,7 +46,7 @@ export function AgentPanel() {
 
   useEffect(() => {
     if (!workspace) return;
-    void store.refreshAgentSessions();
+    void store.openLastAgentSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace?.path]);
 
@@ -87,7 +87,7 @@ export function AgentPanel() {
             size="icon"
             onClick={() => {
               setSessionsOpen(true);
-              void store.refreshAgentSessions();
+              void store.openLastAgentSession();
             }}
             disabled={agentBusy}
             aria-label="Sessions"
@@ -122,7 +122,7 @@ export function AgentPanel() {
             type="button"
             onClick={() => {
               setSessionsOpen(true);
-              void store.refreshAgentSessions();
+              void store.openLastAgentSession();
             }}
             className="shrink-0 max-w-[40%] truncate px-1.5 py-0.5 border border-border rounded bg-bg/60 text-muted font-mono text-[10px]"
             title={activeSessionId}

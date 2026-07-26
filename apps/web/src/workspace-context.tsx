@@ -153,6 +153,14 @@ function applyChatEvent(
   return messages;
 }
 
+// Browser kills fetch/SSE on background/close ("Load failed"). Backend keeps the turn.
+function isTransportError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return error instanceof TypeError
+    || /load failed|failed to fetch|networkerror|network request failed|the user aborted|fetch failed/i.test(message);
+}
+
 
 const WELCOME_MESSAGE: ChatMessage = {
   id: 'welcome',
@@ -198,6 +206,7 @@ export interface WorkspaceStore {
   sendChat: (value?: string) => Promise<void>;
   newAgentSession: () => Promise<void>;
   loadAgentSession: (sessionId: string) => Promise<void>;
+  openLastAgentSession: () => Promise<void>;
   closeAgentSession: (sessionId?: string) => Promise<void>;
   refreshAgentSessions: () => Promise<void>;
 }
@@ -224,13 +233,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [activeAdapter, setActiveAdapter] = useState<string | null>(null);
   const [agentSessionsList, setAgentSessionsList] = useState<SessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-
+  const openingAgent = useRef(false);
   const fileRequest = useRef(0);
   const selectedRef = useRef<FileEntry | null>(null);
   const dirtyRef = useRef(false);
+  const activeSessionIdRef = useRef<string | null>(null);
+
 
   useEffect(() => { selectedRef.current = selectedFile; }, [selectedFile]);
   useEffect(() => { dirtyRef.current = fileDirty; }, [fileDirty]);
+  useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
 
   useEffect(() => {
     if (!fileDirty) return;
@@ -442,78 +454,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [workspace]);
 
-  const sendChat = useCallback(async (value?: string) => {
-    const text = (value ?? chatInput).trim();
-    if (!text || agentBusy || !workspace) return;
-    setChatInput('');
-    setChatMessages((current) => [
-      ...current,
-      { id: `user-${Date.now()}`, role: 'user', text },
-    ]);
-    setAgentBusy(true);
-    setAgentConnection('connecting');
-
-    const cursor = newBubbleCursor();
-    const handleEvent = (event: AgentEvent) => {
-      if (event.type === 'status') {
-        setAgentConnection(event.status === 'thinking' ? 'thinking' : event.status === 'connecting' ? 'connecting' : 'ready');
-      }
-      if (event.type === 'session') setActiveSessionId(event.sessionId);
-      if (event.type === 'error') setAgentConnection('error');
-      setChatMessages((current) => applyChatEvent(current, cursor, event, true));
-    };
-    try {
-      const context = selectedFile ? `\n\nThe user is currently viewing ${relativePath(selectedFile.path, workspace.path)}.` : '';
-      await streamAgentMessage(workspace.path, `${text}${context}`, handleEvent, activeSessionId ?? undefined);
-      void refreshAgentSessions();
-    } catch (error) {
-      setChatMessages((current) => applyChatEvent(
-        current,
-        cursor,
-        { type: 'error', message: `Unable to reach agent ACP. ${error instanceof Error ? error.message : String(error)}` },
-        true,
-      ));
-      setAgentConnection('error');
-    } finally {
-      setChatMessages((current) => finishActiveBubble(current, cursor));
-      setAgentBusy(false);
-    }
-  }, [agentBusy, chatInput, selectedFile, workspace, activeSessionId, refreshAgentSessions]);
-
-  const newAgentSession = useCallback(async () => {
-    if (!workspace || agentBusy) return;
-    setAgentBusy(true);
-    setChatMessages([WELCOME_MESSAGE]);
-    setAgentConnection('connecting');
-    try {
-      await agentSessions.create(workspace.path, (event) => {
-        if (event.type === 'session') setActiveSessionId(event.sessionId);
-        if (event.type === 'status') {
-          setAgentConnection(event.status === 'connecting' ? 'connecting' : 'ready');
-        }
-        if (event.type === 'error') setAgentConnection('error');
-      });
-      setAgentConnection('ready');
-      void refreshAgentSessions();
-    } catch (error) {
-      setAgentConnection('error');
-      setChatMessages([{
-        id: `error-${Date.now()}`,
-        role: 'assistant',
-        text: `Could not create session. ${error instanceof Error ? error.message : String(error)}`,
-      }]);
-    } finally {
-      setAgentBusy(false);
-    }
-  }, [workspace, agentBusy, refreshAgentSessions]);
-
-  const loadAgentSession = useCallback(async (sessionId: string) => {
-    if (!workspace || agentBusy) return;
-    setAgentBusy(true);
-    setChatMessages([]);
-    setAgentConnection('connecting');
+  // Streams a session into chat. Replays history, then tails an in-flight turn.
+  // Returns 'dropped' when the browser killed the SSE (background/close).
+  const followAgentSession = useCallback(async (sessionId: string): Promise<'ok' | 'dropped' | 'error'> => {
+    if (!workspace) return 'error';
     let history: ChatMessage[] = [];
     const cursor = newBubbleCursor();
+    let live = false;
+    let failed = false;
     try {
       await agentSessions.load(workspace.path, sessionId, (event) => {
         if (event.type === 'history') {
@@ -531,28 +479,219 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
         if (event.type === 'session') setActiveSessionId(event.sessionId);
         if (event.type === 'status') {
-          setAgentConnection(event.status === 'connecting' ? 'connecting' : 'ready');
+          if (event.status === 'thinking') {
+            live = true;
+            setAgentConnection('thinking');
+          } else if (event.status === 'connecting') {
+            setAgentConnection('connecting');
+          } else {
+            setAgentConnection('ready');
+          }
         }
-        if (event.type === 'error') setAgentConnection('error');
-        history = applyChatEvent(history, cursor, event, false);
+        if (event.type === 'error') {
+          failed = true;
+          setAgentConnection('error');
+        }
+        history = applyChatEvent(history, cursor, event, live);
         setChatMessages(history);
       });
       history = finishActiveBubble(history, cursor);
       setChatMessages(history.length === 0 ? [WELCOME_MESSAGE] : history);
       setActiveSessionId(sessionId);
-      setAgentConnection('ready');
-      void refreshAgentSessions();
+      setAgentConnection((current) => (current === 'error' ? current : 'ready'));
+      return failed ? 'error' : 'ok';
     } catch (error) {
+      if (isTransportError(error)) return 'dropped';
       setAgentConnection('error');
       setChatMessages([{
         id: `error-${Date.now()}`,
         role: 'assistant',
         text: `Could not load session. ${error instanceof Error ? error.message : String(error)}`,
       }]);
+      return 'error';
+    }
+  }, [workspace]);
+
+  // ponytail: browser freezes fetch on hide/close; wait then reattach to server turn.
+  const waitUntilVisible = useCallback((): Promise<void> => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') return Promise.resolve();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const onVis = () => {
+      if (document.visibilityState !== 'visible') return;
+      document.removeEventListener('visibilitychange', onVis);
+      resolve();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return promise;
+  }, []);
+
+  const reattachAgent = useCallback(async (sessionId?: string | null): Promise<'ok' | 'error' | 'missing'> => {
+    if (!workspace) return 'error';
+    let sid = sessionId ?? activeSessionIdRef.current;
+    // ponytail: keep retrying while the tab is backgrounded; bail once visible with nothing to join.
+    for (;;) {
+      if (!sid) {
+        try {
+          const listed = await agentSessions.list(workspace.path);
+          setAgentSessionsList(listed.sessions);
+          setActiveAdapter(listed.adapter);
+          sid = listed.busySessionId ?? listed.activeSessionId ?? activeSessionIdRef.current;
+        } catch {
+          // list can fail while offline; retry after visible
+        }
+      }
+      if (sid) {
+        setAgentConnection('thinking');
+        const result = await followAgentSession(sid);
+        if (result !== 'dropped') {
+          void refreshAgentSessions();
+          return result === 'error' ? 'error' : 'ok';
+        }
+      } else if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        // Visible and no session — request never landed or already finished elsewhere.
+        setAgentConnection((current) => (current === 'error' ? current : 'ready'));
+        return 'missing';
+      }
+      setAgentConnection('thinking');
+      // Visible drops (flaky net) need a beat so we don't hammer load.
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 1000);
+        await promise;
+      } else {
+        await waitUntilVisible();
+      }
+      sid = activeSessionIdRef.current ?? sid;
+    }
+  }, [workspace, followAgentSession, refreshAgentSessions, waitUntilVisible]);
+
+  const sendChat = useCallback(async (value?: string) => {
+    const text = (value ?? chatInput).trim();
+    if (!text || agentBusy || !workspace) return;
+    setChatInput('');
+    setChatMessages((current) => [
+      ...current,
+      { id: `user-${Date.now()}`, role: 'user', text },
+    ]);
+    setAgentBusy(true);
+    setAgentConnection('connecting');
+    const cursor = newBubbleCursor();
+    let sessionId = activeSessionId ?? undefined;
+    const handleEvent = (event: AgentEvent) => {
+      if (event.type === 'status') {
+        setAgentConnection(event.status === 'thinking' ? 'thinking' : event.status === 'connecting' ? 'connecting' : 'ready');
+      }
+      if (event.type === 'session') {
+        sessionId = event.sessionId;
+        setActiveSessionId(event.sessionId);
+      }
+      if (event.type === 'error') setAgentConnection('error');
+      setChatMessages((current) => applyChatEvent(current, cursor, event, true));
+    };
+    try {
+      const context = selectedFile ? `\n\nThe user is currently viewing ${relativePath(selectedFile.path, workspace.path)}.` : '';
+      try {
+        await streamAgentMessage(workspace.path, `${text}${context}`, handleEvent, activeSessionId ?? undefined);
+      } catch (error) {
+        if (!isTransportError(error)) throw error;
+        // Stream died (unfocus/close). Server keeps running — reattach, don't error.
+        const result = await reattachAgent(sessionId);
+        if (result === 'missing') throw error instanceof Error ? error : new Error(String(error));
+      }
+      void refreshAgentSessions();
+    } catch (error) {
+      setChatMessages((current) => applyChatEvent(
+        current,
+        cursor,
+        { type: 'error', message: `Unable to reach agent ACP. ${error instanceof Error ? error.message : String(error)}` },
+        true,
+      ));
+      setAgentConnection('error');
+    } finally {
+      setChatMessages((current) => finishActiveBubble(current, cursor));
+      setAgentBusy(false);
+    }
+  }, [agentBusy, chatInput, selectedFile, workspace, activeSessionId, refreshAgentSessions, reattachAgent]);
+
+  const newAgentSession = useCallback(async () => {
+    if (!workspace || agentBusy) return;
+    setAgentBusy(true);
+    setChatMessages([WELCOME_MESSAGE]);
+    setAgentConnection('connecting');
+    try {
+      await agentSessions.create(workspace.path, (event) => {
+        if (event.type === 'session') setActiveSessionId(event.sessionId);
+        if (event.type === 'status') {
+          setAgentConnection(event.status === 'connecting' ? 'connecting' : 'ready');
+        }
+        if (event.type === 'error') setAgentConnection('error');
+      });
+      setAgentConnection('ready');
+      void refreshAgentSessions();
+    } catch (error) {
+      if (isTransportError(error)) {
+        // Create stream dropped; session may still exist server-side.
+        setAgentConnection('ready');
+        void refreshAgentSessions();
+      } else {
+        setAgentConnection('error');
+        setChatMessages([{
+          id: `error-${Date.now()}`,
+          role: 'assistant',
+          text: `Could not create session. ${error instanceof Error ? error.message : String(error)}`,
+        }]);
+      }
     } finally {
       setAgentBusy(false);
     }
   }, [workspace, agentBusy, refreshAgentSessions]);
+
+  const loadAgentSession = useCallback(async (sessionId: string) => {
+    if (!workspace || agentBusy) return;
+    setAgentBusy(true);
+    setChatMessages([]);
+    setAgentConnection('connecting');
+    try {
+      const first = await followAgentSession(sessionId);
+      if (first === 'dropped') await reattachAgent(sessionId);
+      else void refreshAgentSessions();
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [workspace, agentBusy, followAgentSession, reattachAgent, refreshAgentSessions]);
+
+  // ponytail: agent tab opens latest session (or welcome). load attaches to in-flight turn.
+  const openLastAgentSession = useCallback(async () => {
+    if (!workspace || agentBusy || openingAgent.current) return;
+    openingAgent.current = true;
+    try {
+      const result = await agentSessions.list(workspace.path);
+      setAgentSessionsList(result.sessions);
+      setActiveAdapter(result.adapter);
+      const latest = result.sessions.reduce<SessionInfo | null>((best, session) => {
+        if (!best) return session;
+        return (session.updatedAt ?? '') > (best.updatedAt ?? '') ? session : best;
+      }, null);
+      const target = result.busySessionId
+        ?? result.activeSessionId
+        ?? latest?.sessionId
+        ?? null;
+      if (!target) {
+        setActiveSessionId(null);
+        setChatMessages([WELCOME_MESSAGE]);
+        setAgentConnection(agentConfigured ? 'ready' : 'idle');
+        return;
+      }
+      // Already on this session (tab switch) — don't reload or touch ACP.
+      if (target === activeSessionIdRef.current) return;
+      await loadAgentSession(target);
+    } catch {
+      setAgentSessionsList([]);
+      setChatMessages([WELCOME_MESSAGE]);
+    } finally {
+      openingAgent.current = false;
+    }
+  }, [workspace, agentBusy, agentConfigured, loadAgentSession]);
 
   // ponytail: close = drop ACP session + local chat; next message spins a new one
   const closeAgentSession = useCallback(async (sessionId?: string) => {
@@ -627,6 +766,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     sendChat,
     newAgentSession,
     loadAgentSession,
+    openLastAgentSession,
     closeAgentSession,
     refreshAgentSessions,
   };

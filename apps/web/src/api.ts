@@ -111,6 +111,7 @@ export interface SessionInfo {
   title?: string;
   updatedAt?: string;
   active: boolean;
+  busy?: boolean;
 }
 
 export function agentStatus() {
@@ -177,7 +178,7 @@ export async function streamAgentMessage(
 
 export const agentSessions = {
   list: (workspace: string) =>
-    request<{ sessions: SessionInfo[]; activeSessionId: string | null; adapter: string }>(
+    request<{ sessions: SessionInfo[]; activeSessionId: string | null; busySessionId: string | null; adapter: string }>(
       `/api/agent/sessions?workspace=${encodeURIComponent(workspace)}`,
     ),
   create: async (workspace: string, onEvent: (event: AgentEvent) => void) => {
