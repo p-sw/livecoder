@@ -2,6 +2,8 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import * as acp from '@agentclientprotocol/sdk';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import {
   adapterInstalled,
@@ -15,17 +17,13 @@ import {
 
 export type AgentEvent =
   | { type: 'status'; status: 'connecting' | 'ready' | 'thinking' | 'complete'; message?: string }
-  | { type: 'text'; text: string }
-  | { type: 'thought'; text: string }
-  | { type: 'tool'; id: string; title: string; status?: string; kind?: string }
+  | { type: 'text'; text: string; messageId?: string }
+  | { type: 'thought'; text: string; messageId?: string }
+  | { type: 'tool'; id: string; title?: string; status?: string; kind?: string; detail?: string }
+  | { type: 'history'; role: 'user'; text: string }
+  | { type: 'session'; sessionId: string }
   | { type: 'error'; message: string }
   | { type: 'done'; stopReason?: string };
-
-type Emit = (event: AgentEvent) => void;
-type QueueItem =
-  | { kind: 'notification'; value: acp.SessionNotification }
-  | { kind: 'stop'; value: acp.PromptResponse }
-  | { kind: 'error'; value: unknown };
 
 export interface AdapterDescriptor {
   id: string;
@@ -41,40 +39,95 @@ export interface AgentStatus {
   defaultAdapter: string;
   defaultAdapterSource: 'settings' | 'env' | 'builtin';
   adapters: AdapterDescriptor[];
+  activeSessionId: string | null;
+  capabilities: {
+    loadSession: boolean;
+    listSessions: boolean;
+    closeSession: boolean;
+    deleteSession: boolean;
+  };
 }
+
+export interface SessionInfo {
+  sessionId: string;
+  cwd?: string;
+  title?: string;
+  updatedAt?: string;
+  active: boolean;
+}
+
+type Emit = (event: AgentEvent) => void;
+
+type QueueItem =
+  | { kind: 'notification'; value: acp.SessionNotification }
+  | { kind: 'stop'; value: acp.PromptResponse }
+  | { kind: 'error'; value: unknown };
 
 @Injectable()
 export class AgentService implements OnModuleDestroy {
-  // ponytail: one session per (adapter, workspace) pair. Switching adapters
-  // mid-session is supported because the workspace key stays stable and
-  // each adapter holds its own long-lived AcpSession.
-  private readonly sessions = new Map<string, Promise<AcpSession>>();
+  // ponytail: one ACP process per (adapter, workspace). Multiple chat
+  // sessions ride the same connection via session/new + session/load.
+  private readonly runtimes = new Map<string, Promise<AcpRuntime>>();
 
-  async prompt(workspace: string, text: string, emit: Emit, adapterId?: string): Promise<void> {
-    const adapter = this.resolveAdapter(adapterId);
-    const key = `${adapter.id}::${workspace}`;
-    let sessionPromise = this.sessions.get(key);
-    if (!sessionPromise) {
-      sessionPromise = AcpSession.start(workspace, emit, adapter);
-      this.sessions.set(key, sessionPromise);
-      sessionPromise.catch(() => this.sessions.delete(key));
+  async prompt(workspace: string, text: string, emit: Emit, sessionId?: string): Promise<void> {
+    const runtime = await this.getRuntime(workspace, emit);
+    await runtime.prompt(text, emit, sessionId);
+  }
+
+  async listSessions(workspace: string): Promise<{ sessions: SessionInfo[]; activeSessionId: string | null; adapter: string }> {
+    const adapter = this.resolveAdapter();
+    const key = runtimeKey(adapter.id, workspace);
+    const existing = this.runtimes.get(key);
+    if (!existing) {
+      // Runtime not up yet — still surface disk sessions so the picker shows on first open.
+      const sessions = await listPersistedSessions(workspace);
+      return { sessions, activeSessionId: null, adapter: adapter.id };
     }
-    const session = await sessionPromise;
-    try {
-      await session.prompt(text, emit);
-    } catch (error) {
-      if (this.sessions.get(key) === sessionPromise) this.sessions.delete(key);
-      void session.close().catch(() => undefined);
-      throw error;
+    const runtime = await existing;
+    const sessions = await runtime.listSessions();
+    return { sessions, activeSessionId: runtime.activeSessionId, adapter: adapter.id };
+  }
+
+  async createSession(workspace: string, emit: Emit): Promise<{ sessionId: string }> {
+    const runtime = await this.getRuntime(workspace, emit);
+    const sessionId = await runtime.newSession(emit);
+    return { sessionId };
+  }
+
+  async loadSession(workspace: string, sessionId: string, emit: Emit): Promise<void> {
+    const runtime = await this.getRuntime(workspace, emit);
+    await runtime.loadSession(sessionId, emit);
+  }
+
+  async closeSession(workspace: string, sessionId: string): Promise<void> {
+    const adapter = this.resolveAdapter();
+    const key = runtimeKey(adapter.id, workspace);
+    const existing = this.runtimes.get(key);
+    if (existing) {
+      const runtime = await existing;
+      await runtime.closeSession(sessionId);
+      return;
     }
+    // Runtime not up — still wipe disk so the next list is clean.
+    await deletePersistedSession(workspace, sessionId);
+  }
+
+  async cancel(workspace: string, sessionId?: string): Promise<void> {
+    const adapter = this.resolveAdapter();
+    const key = runtimeKey(adapter.id, workspace);
+    const existing = this.runtimes.get(key);
+    if (!existing) return;
+    const runtime = await existing;
+    await runtime.cancel(sessionId);
   }
 
   status(adapterId?: string): AgentStatus {
     const adapter = this.resolveAdapter(adapterId);
     const installed = adapterInstalled(adapter);
+    const active = this.findRuntimeSync(adapter.id);
     return {
       configured: installed,
-      sessions: this.sessions.size,
+      sessions: this.runtimes.size,
       adapter: adapter.id,
       defaultAdapter: defaultAdapterId(),
       defaultAdapterSource: defaultAdapterSource(),
@@ -84,13 +137,55 @@ export class AgentService implements OnModuleDestroy {
         installed: adapterInstalled(spec),
         active: spec.id === adapter.id,
       })),
+      activeSessionId: active?.activeSessionId ?? null,
+      capabilities: active?.capabilities ?? {
+        loadSession: false,
+        listSessions: false,
+        closeSession: false,
+        deleteSession: false,
+      },
     };
   }
 
+  private findRuntimeSync(adapterId: string): AcpRuntime | null {
+    for (const [key, promise] of this.runtimes) {
+      if (!key.startsWith(`${adapterId}::`)) continue;
+      // ponytail: only expose a runtime that has already resolved; pending
+      // starts report null until ready.
+      const matched = peekResolved(promise);
+      if (matched) return matched;
+    }
+    return null;
+  }
+
+  private async getRuntime(workspace: string, emit: Emit): Promise<AcpRuntime> {
+    const adapter = this.resolveAdapter();
+    const key = runtimeKey(adapter.id, workspace);
+    let runtimePromise = this.runtimes.get(key);
+    if (!runtimePromise) {
+      runtimePromise = AcpRuntime.start(workspace, emit, adapter).then((runtime) => {
+        runtime.onExit(() => {
+          if (this.runtimes.get(key) === runtimePromise) this.runtimes.delete(key);
+        });
+        return runtime;
+      });
+      this.runtimes.set(key, runtimePromise);
+      runtimePromise.catch(() => {
+        if (this.runtimes.get(key) === runtimePromise) this.runtimes.delete(key);
+      });
+    }
+    try {
+      return await runtimePromise;
+    } catch (error) {
+      this.runtimes.delete(key);
+      throw error;
+    }
+  }
+
   private resolveAdapter(adapterId?: string): AdapterSpec {
-    const resolved = resolveAdapter(adapterId ?? '');
-    // ponytail: requested adapter missing → fall back to default. The chat
-    // endpoint surfaces a friendly error if even the default is missing.
+    // ponytail: adapter comes from settings/env only. Request overrides are
+    // ignored so the Agent tab can't drift from configuration.
+    const resolved = resolveAdapter(adapterId || defaultAdapterId());
     if (resolved) return resolved;
     const fallback = resolveAdapter(defaultAdapterId());
     if (fallback) return fallback;
@@ -98,24 +193,35 @@ export class AgentService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    const sessions = await Promise.allSettled(this.sessions.values());
+    const runtimes = await Promise.allSettled(this.runtimes.values());
     await Promise.all(
-      sessions.flatMap((result) => (result.status === 'fulfilled' ? [result.value.close()] : [])),
+      runtimes.flatMap((result) => (result.status === 'fulfilled' ? [result.value.dispose()] : [])),
     );
+    this.runtimes.clear();
   }
 }
 
-class AcpSession {
+class AcpRuntime {
   private queue: Promise<void> = Promise.resolve();
+  private activePrompt: { sessionId: string } | null = null;
+  private exitHandlers: Array<() => void> = [];
+  private dead = false;
+  activeSessionId: string | null = null;
+  readonly capabilities: AgentStatus['capabilities'];
 
   private constructor(
     private readonly child: ChildProcessWithoutNullStreams,
     private readonly connection: acp.ClientSideConnection,
-    private readonly sessionId: string,
+    private readonly cwd: string,
+    private readonly adapter: AdapterSpec,
     private readonly updates: AsyncQueue<QueueItem>,
-  ) {}
+    capabilities: AgentStatus['capabilities'],
+    private readonly turnGate: TurnGate,
+  ) {
+    this.capabilities = capabilities;
+  }
 
-  static async start(cwd: string, emit: Emit, adapter: AdapterSpec): Promise<AcpSession> {
+  static async start(cwd: string, emit: Emit, adapter: AdapterSpec): Promise<AcpRuntime> {
     emit({ type: 'status', status: 'connecting', message: `Starting ${adapter.label}…` });
     const { command, args } = resolveAdapterCommand(adapter);
     const child = spawn(command, args, {
@@ -131,6 +237,7 @@ class AcpSession {
     await waitForSpawn(child);
 
     const updates = new AsyncQueue<QueueItem>();
+    const turnGate = new TurnGate();
     const client: acp.Client = {
       requestPermission: async (params) => {
         const option = params.options.find((item) => item.kind === 'allow_once')
@@ -140,6 +247,9 @@ class AcpSession {
         return { outcome: { outcome: 'selected', optionId: option.optionId } };
       },
       sessionUpdate: async (params) => {
+        // ponytail: drop updates when no prompt/load is listening so startup
+        // noise (available_commands, session_info) can't poison the next turn.
+        if (!turnGate.open) return;
         updates.push({ kind: 'notification', value: params });
       },
       readTextFile: async (params) => {
@@ -160,19 +270,41 @@ class AcpSession {
       Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
     );
     const connection = new acp.ClientSideConnection(() => client, stream);
-    void connection.closed.then(() => {
-      updates.push({ kind: 'error', value: new Error(`${adapter.label} connection closed`) });
+
+    const runtimeHolder: { current: AcpRuntime | null } = { current: null };
+
+    const fail = (error: unknown) => {
+      updates.push({ kind: 'error', value: error });
+      runtimeHolder.current?.markDead();
+    };
+    void connection.closed.then(() => fail(new Error(`${adapter.label} connection closed`)));
+    child.once('exit', (code, signal) => {
+      fail(new Error(`${adapter.label} exited${code != null ? ` (${code})` : signal ? ` (${signal})` : ''}`));
     });
 
     try {
-      await connection.initialize({
+      const init = await connection.initialize({
         protocolVersion: acp.PROTOCOL_VERSION,
         clientInfo: { name: 'livecoder', title: 'livecoder', version: '0.1.0' },
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+        clientCapabilities: {
+          fs: { readTextFile: true, writeTextFile: true },
+        },
       });
-      const session = await connection.newSession({ cwd, mcpServers: [] });
+      const caps = init.agentCapabilities ?? {};
+      const sessionCaps = caps.sessionCapabilities ?? {};
+      const runtime = new AcpRuntime(child, connection, cwd, adapter, updates, {
+        loadSession: Boolean(caps.loadSession),
+        listSessions: sessionCaps.list != null,
+        closeSession: sessionCaps.close != null,
+        // ACP delete removes persisted history; close only frees the live handle.
+        deleteSession: sessionCaps.delete != null,
+      }, turnGate);
+      runtimeHolder.current = runtime;
+
+      // Create the first session so the first prompt has somewhere to go.
+      await runtime.newSession(emit);
       emit({ type: 'status', status: 'ready', message: `${adapter.label} is ready` });
-      return new AcpSession(child, connection, session.sessionId, updates);
+      return runtime;
     } catch (error) {
       child.kill();
       const detail = error instanceof Error ? error.message : String(error);
@@ -181,74 +313,255 @@ class AcpSession {
     }
   }
 
-  prompt(text: string, emit: Emit): Promise<void> {
-    const turn = this.queue.then(() => this.runPrompt(text, emit));
+  onExit(handler: () => void): void {
+    this.exitHandlers.push(handler);
+    if (this.dead) handler();
+  }
+
+  markDead(): void {
+    if (this.dead) return;
+    this.dead = true;
+    for (const handler of this.exitHandlers) handler();
+  }
+
+  async newSession(emit: Emit): Promise<string> {
+    this.assertAlive();
+    // Close previous active session when the agent supports it.
+    if (this.activeSessionId && this.capabilities.closeSession) {
+      try {
+        await this.connection.closeSession({ sessionId: this.activeSessionId });
+      } catch {
+        // Adapter may already have torn it down (e.g. closeAllExcept).
+      }
+    }
+    const session = await this.connection.newSession({ cwd: this.cwd, mcpServers: [] });
+    this.activeSessionId = session.sessionId;
+    emit({ type: 'session', sessionId: session.sessionId });
+    return session.sessionId;
+  }
+
+  async loadSession(sessionId: string, emit: Emit): Promise<void> {
+    this.assertAlive();
+    if (!this.capabilities.loadSession) {
+      throw new Error(`${this.adapter.label} does not support loading sessions`);
+    }
+    emit({ type: 'status', status: 'connecting', message: 'Loading session…' });
+    this.turnGate.enter();
+    this.updates.clear();
+    try {
+      const loadPromise = this.connection.loadSession({
+        sessionId,
+        cwd: this.cwd,
+        mcpServers: [],
+      });
+      // Replay history while loadSession streams session/update notifications.
+      const replay = this.drainUntil(loadPromise, (update) => {
+        const event = mapHistoryUpdate(update);
+        if (event) emit(event);
+      });
+      await loadPromise;
+      await replay;
+      this.activeSessionId = sessionId;
+      emit({ type: 'session', sessionId });
+      emit({ type: 'status', status: 'ready', message: 'Session loaded' });
+      emit({ type: 'done' });
+    } finally {
+      this.turnGate.leave();
+      this.updates.clear();
+    }
+  }
+
+  async listSessions(): Promise<SessionInfo[]> {
+    this.assertAlive();
+    if (!this.capabilities.listSessions) return this.activeSessionId
+      ? [{ sessionId: this.activeSessionId, cwd: this.cwd, active: true }]
+      : [];
+    const all: SessionInfo[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const page = await this.connection.listSessions({ cwd: this.cwd, cursor });
+      for (const item of page.sessions ?? []) {
+        all.push({
+          sessionId: item.sessionId,
+          cwd: item.cwd ?? undefined,
+          title: item.title ?? undefined,
+          updatedAt: item.updatedAt ?? undefined,
+          active: item.sessionId === this.activeSessionId,
+        });
+      }
+      cursor = page.nextCursor ?? null;
+    } while (cursor);
+    return all;
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    this.assertAlive();
+    // Prefer real delete when the agent supports it.
+    if (this.capabilities.deleteSession) {
+      try {
+        await this.connection.deleteSession({ sessionId });
+      } catch {
+        // fall through to close + disk wipe
+      }
+    } else if (this.capabilities.closeSession) {
+      try {
+        await this.connection.closeSession({ sessionId });
+      } catch {
+        // ignore
+      }
+    }
+    // ponytail: omp/pi listSessions reads disk; close only drops RAM. Wipe files so delete sticks.
+    await deletePersistedSession(this.cwd, sessionId);
+    if (this.activeSessionId === sessionId) this.activeSessionId = null;
+  }
+
+  async cancel(sessionId?: string): Promise<void> {
+    const id = sessionId ?? this.activeSessionId ?? this.activePrompt?.sessionId;
+    if (!id) return;
+    try {
+      await this.connection.cancel({ sessionId: id });
+    } catch {
+      // cancel is best-effort
+    }
+  }
+
+  prompt(text: string, emit: Emit, sessionId?: string): Promise<void> {
+    const turn = this.queue.then(() => this.runPrompt(text, emit, sessionId));
     this.queue = turn.catch(() => undefined);
     return turn;
   }
 
-  async close(): Promise<void> {
-    try {
-      await this.connection.closeSession({ sessionId: this.sessionId });
-    } catch {
-      // The adapter may already have exited.
+  async dispose(): Promise<void> {
+    this.markDead();
+    if (this.activeSessionId && this.capabilities.closeSession) {
+      try {
+        await this.connection.closeSession({ sessionId: this.activeSessionId });
+      } catch {
+        // ignore
+      }
     }
     if (this.child.stdin.writable) this.child.stdin.end();
     if (!this.child.killed) this.child.kill('SIGTERM');
   }
 
-  private async runPrompt(text: string, emit: Emit): Promise<void> {
+  private async runPrompt(text: string, emit: Emit, sessionId?: string): Promise<void> {
+    this.assertAlive();
+    let id = sessionId ?? this.activeSessionId;
+    if (!id) id = await this.newSession(emit);
+    this.activeSessionId = id;
+    emit({ type: 'session', sessionId: id });
     emit({ type: 'status', status: 'thinking' });
-    const responsePromise = this.connection.prompt({
-      sessionId: this.sessionId,
-      prompt: [{ type: 'text', text }],
-    });
-    responsePromise.then(
-      (value) => this.updates.push({ kind: 'stop', value }),
-      (error) => this.updates.push({ kind: 'error', value: error }),
-    );
 
-    for (;;) {
+    this.turnGate.enter();
+    this.updates.clear();
+    this.activePrompt = { sessionId: id };
+    try {
+      const responsePromise = this.connection.prompt({
+        sessionId: id,
+        prompt: [{ type: 'text', text }],
+      });
+      responsePromise.then(
+        (value) => this.updates.push({ kind: 'stop', value }),
+        (error) => this.updates.push({ kind: 'error', value: error }),
+      );
+
+      for (;;) {
+        const item = await this.updates.next();
+        if (item.kind === 'error') {
+          this.markDead();
+          throw item.value instanceof Error ? item.value : new Error(String(item.value));
+        }
+        if (item.kind === 'stop') {
+          emit({ type: 'status', status: 'complete' });
+          emit({ type: 'done', stopReason: item.value.stopReason });
+          return;
+        }
+        // Only surface updates for the active session.
+        if (item.value.sessionId && item.value.sessionId !== id) continue;
+        const event = mapUpdate(item.value.update);
+        if (event) emit(event);
+      }
+    } finally {
+      this.activePrompt = null;
+      this.turnGate.leave();
+      this.updates.clear();
+    }
+  }
+
+  private async drainUntil(done: Promise<unknown>, onUpdate: (update: acp.SessionUpdate) => void): Promise<void> {
+    let finished = false;
+    void done.finally(() => {
+      finished = true;
+      this.updates.push({ kind: 'stop', value: { stopReason: 'end_turn' } });
+    });
+    while (!finished) {
       const item = await this.updates.next();
       if (item.kind === 'error') {
+        this.markDead();
         throw item.value instanceof Error ? item.value : new Error(String(item.value));
       }
-      if (item.kind === 'stop') {
-        emit({ type: 'status', status: 'complete' });
-        emit({ type: 'done', stopReason: item.value.stopReason });
-        return;
-      }
-      const event = mapUpdate(item.value.update);
-      if (event) emit(event);
+      if (item.kind === 'stop') return;
+      onUpdate(item.value.update);
     }
+  }
+
+  private assertAlive(): void {
+    if (this.dead) throw new Error(`${this.adapter.label} connection is closed`);
   }
 }
 
 function mapUpdate(update: acp.SessionUpdate): AgentEvent | null {
   switch (update.sessionUpdate) {
     case 'agent_message_chunk':
-      return update.content.type === 'text' ? { type: 'text', text: update.content.text } : null;
+      return update.content.type === 'text'
+        ? { type: 'text', text: update.content.text, messageId: update.messageId ?? undefined }
+        : null;
     case 'agent_thought_chunk':
-      return update.content.type === 'text' ? { type: 'thought', text: update.content.text } : null;
+      return update.content.type === 'text' ? { type: 'thought', text: update.content.text, messageId: update.messageId ?? undefined } : null;
     case 'tool_call':
-      return {
-        type: 'tool',
-        id: update.toolCallId,
-        title: update.title,
-        status: update.status ?? undefined,
-        kind: update.kind ?? undefined,
-      };
     case 'tool_call_update':
       return {
         type: 'tool',
         id: update.toolCallId,
-        title: update.title ?? 'Working',
+        // ponytail: never invent "Working" — client keeps the last real title on partial updates
+        title: update.title ?? undefined,
         status: update.status ?? undefined,
         kind: update.kind ?? undefined,
+        detail: formatToolDetail(update),
       };
     default:
       return null;
   }
+}
+
+function formatToolDetail(
+  update: { content?: acp.ToolCallContent[] | null; locations?: acp.ToolCallLocation[] | null; rawInput?: unknown; rawOutput?: unknown },
+): string | undefined {
+  const parts: string[] = [];
+  if (update.locations?.length) {
+    parts.push(update.locations.map((l) => (l.line != null ? `${l.path}:${l.line}` : l.path)).join('\n'));
+  }
+  if (update.rawInput !== undefined) parts.push(typeof update.rawInput === 'string' ? update.rawInput : JSON.stringify(update.rawInput, null, 2));
+  if (update.content?.length) {
+    for (const block of update.content) {
+      if (block.type === 'content' && block.content.type === 'text') parts.push(block.content.text);
+      else if (block.type === 'diff') {
+        const old = block.oldText?.trim() ? `${block.oldText}\n` : '';
+        parts.push(`${block.path}\n${old}${block.newText}`);
+      }
+    }
+  }
+  if (update.rawOutput !== undefined) parts.push(typeof update.rawOutput === 'string' ? update.rawOutput : JSON.stringify(update.rawOutput, null, 2));
+  return parts.length ? parts.join('\n\n') : undefined;
+}
+
+function mapHistoryUpdate(update: acp.SessionUpdate): AgentEvent | null {
+  // ponytail: replay uses the same event shapes as live turns so the client
+  // can rebuild tool/thought/message bubbles instead of one flattened blob.
+  if (update.sessionUpdate === 'user_message_chunk') {
+    return update.content.type === 'text' ? { type: 'history', role: 'user', text: update.content.text } : null;
+  }
+  return mapUpdate(update);
 }
 
 function waitForSpawn(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -264,6 +577,113 @@ function waitForSpawn(child: ChildProcessWithoutNullStreams): Promise<void> {
   return promise;
 }
 
+function runtimeKey(adapterId: string, workspace: string): string {
+  return `${adapterId}::${workspace}`;
+}
+
+// ponytail: pi/omp store sessions under ~/.{omp,pi}/agent/sessions/<cwd-encoded>/
+function sessionDirCandidates(cwd: string): string[] {
+  const resolved = path.resolve(cwd);
+  const home = os.homedir();
+  const rel = path.relative(home, resolved);
+  const names = new Set<string>();
+  names.add(`--${resolved.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`);
+  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+    names.add(rel ? `-${rel.replace(/[/\\:]/g, '-')}` : '-');
+  }
+  const roots = [
+    path.join(home, '.omp', 'agent', 'sessions'),
+    path.join(home, '.pi', 'agent', 'sessions'),
+  ];
+  return roots.flatMap((root) => [...names].map((name) => path.join(root, name)));
+}
+
+async function deletePersistedSession(cwd: string, sessionId: string): Promise<void> {
+  for (const dir of sessionDirCandidates(cwd)) {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.includes(sessionId)) continue;
+      const full = path.join(dir, entry);
+      try {
+        const st = await fs.stat(full);
+        if (st.isDirectory()) {
+          await fs.rm(full, { recursive: true, force: true });
+        } else {
+          await fs.unlink(full);
+          if (entry.endsWith('.jsonl')) {
+            await fs.rm(full.slice(0, -'.jsonl'.length), { recursive: true, force: true }).catch(() => undefined);
+          }
+        }
+      } catch {
+        // best-effort per entry
+      }
+    }
+  }
+}
+
+async function listPersistedSessions(cwd: string): Promise<SessionInfo[]> {
+  const byId = new Map<string, SessionInfo>();
+  for (const dir of sessionDirCandidates(cwd)) {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.jsonl')) continue;
+      const match = entry.match(/_([0-9a-f-]{36})\.jsonl$/i);
+      if (!match) continue;
+      const sessionId = match[1];
+      if (byId.has(sessionId)) continue;
+      const full = path.join(dir, entry);
+      let title: string | undefined;
+      let updatedAt: string | undefined;
+      try {
+        const st = await fs.stat(full);
+        updatedAt = st.mtime.toISOString();
+        // first lines hold title/session metadata — don't parse the whole transcript
+        const fh = await fs.open(full, 'r');
+        try {
+          const buf = Buffer.alloc(4096);
+          const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+          const head = buf.subarray(0, bytesRead).toString('utf8');
+          for (const line of head.split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const row = JSON.parse(line) as { type?: string; title?: string; updatedAt?: string; timestamp?: string; cwd?: string };
+              if (row.type === 'title' && row.title?.trim()) title = row.title.trim();
+              if (row.type === 'title' && row.updatedAt) updatedAt = row.updatedAt;
+              if (row.type === 'session' && row.timestamp) updatedAt = row.timestamp;
+            } catch {
+              // skip bad line
+            }
+          }
+        } finally {
+          await fh.close();
+        }
+      } catch {
+        continue;
+      }
+      byId.set(sessionId, { sessionId, cwd, title, updatedAt, active: false });
+    }
+  }
+  return [...byId.values()].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+}
+
+// ponytail: tiny gate so sessionUpdate can no-op when nothing is draining.
+class TurnGate {
+  private depth = 0;
+  get open(): boolean { return this.depth > 0; }
+  enter(): void { this.depth += 1; }
+  leave(): void { this.depth = Math.max(0, this.depth - 1); }
+}
+
 class AsyncQueue<T> {
   private readonly values: T[] = [];
   private readonly waiters: Array<(value: T) => void> = [];
@@ -277,6 +697,20 @@ class AsyncQueue<T> {
   next(): Promise<T> {
     const value = this.values.shift();
     if (value !== undefined) return Promise.resolve(value);
-    return new Promise((resolveNext) => this.waiters.push(resolveNext));
+    const { promise, resolve } = Promise.withResolvers<T>();
+    this.waiters.push(resolve);
+    return promise;
   }
+
+  clear(): void {
+    this.values.length = 0;
+  }
+}
+
+// ponytail: Promise.inspect isn't standard; stash the value when resolved.
+const resolvedPeek = new WeakMap<Promise<unknown>, unknown>();
+function peekResolved<T>(promise: Promise<T>): T | null {
+  if (resolvedPeek.has(promise)) return resolvedPeek.get(promise) as T;
+  void promise.then((value) => resolvedPeek.set(promise, value));
+  return null;
 }
