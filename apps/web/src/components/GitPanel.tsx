@@ -1,6 +1,6 @@
 // ponytail: one panel, native <details> for collapsible diffs, no extra
-// dialog libs. Stage/unstage split, remote edit/delete, tag push/delete,
-// branch create/delete. Overflow killed with min-w-0 + truncate everywhere.
+// dialog libs. Stage/unstage/restore (unstaged only), remote edit/delete,
+// tag push/delete, branch create/delete. Overflow killed with min-w-0 + truncate.
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Tag,
   Trash2,
+  Undo2,
   Upload,
   X,
 } from 'lucide-react';
@@ -347,6 +348,24 @@ function GitPanelBody({
                 ? () =>
                     void runOp('stage all', () =>
                       git.stage(
+                        workspacePath,
+                        unstaged.map((f) => f.path),
+                      ),
+                    )
+                : undefined
+            }
+            secondaryLabel="Restore"
+            secondaryIcon={<Undo2 size={12} />}
+            secondaryDanger
+            onSecondary={(file) =>
+              void runOp(`restore ${file.path}`, () => git.restore(workspacePath, [file.path]))
+            }
+            secondaryBulkLabel={unstaged.length > 0 ? 'Restore all' : undefined}
+            onSecondaryBulk={
+              unstaged.length > 0
+                ? () =>
+                    void runOp('restore all', () =>
+                      git.restore(
                         workspacePath,
                         unstaged.map((f) => f.path),
                       ),
@@ -797,6 +816,12 @@ function FileList({
   onAction,
   bulkLabel,
   onBulk,
+  secondaryLabel,
+  secondaryIcon,
+  onSecondary,
+  secondaryDanger,
+  secondaryBulkLabel,
+  onSecondaryBulk,
 }: {
   files: GitDiffFile[];
   fileDiff: { key: string; path: string; staged: boolean; text: string; loading: boolean } | null;
@@ -807,21 +832,39 @@ function FileList({
   onAction: (file: GitDiffFile) => void;
   bulkLabel?: string;
   onBulk?: () => void;
+  secondaryLabel?: string;
+  secondaryIcon?: ReactNode;
+  onSecondary?: (file: GitDiffFile) => void;
+  secondaryDanger?: boolean;
+  secondaryBulkLabel?: string;
+  onSecondaryBulk?: () => void;
 }) {
   return (
     <div className="min-w-0">
-      {bulkLabel && onBulk && (
-        <div className="flex justify-end mb-1">
-          <button
-            type="button"
-            onClick={onBulk}
-            disabled={busy}
-            className="border-0 bg-transparent text-subtle hover:text-fg font-mono text-[10px] px-1 py-0.5 disabled:opacity-50"
-          >
-            {bulkLabel}
-          </button>
+      {(bulkLabel && onBulk) || (secondaryBulkLabel && onSecondaryBulk) ? (
+        <div className="flex justify-end gap-2 mb-1">
+          {secondaryBulkLabel && onSecondaryBulk && (
+            <button
+              type="button"
+              onClick={onSecondaryBulk}
+              disabled={busy}
+              className="border-0 bg-transparent text-subtle hover:text-danger font-mono text-[10px] px-1 py-0.5 disabled:opacity-50"
+            >
+              {secondaryBulkLabel}
+            </button>
+          )}
+          {bulkLabel && onBulk && (
+            <button
+              type="button"
+              onClick={onBulk}
+              disabled={busy}
+              className="border-0 bg-transparent text-subtle hover:text-fg font-mono text-[10px] px-1 py-0.5 disabled:opacity-50"
+            >
+              {bulkLabel}
+            </button>
+          )}
         </div>
-      )}
+      ) : null}
       <ul className="flex flex-col gap-0.5 p-0 m-0 list-none min-w-0">
         {files.map((file) => {
           const key = `${file.staged ? 'S' : 'U'}:${file.path}`;
@@ -845,6 +888,16 @@ function FileList({
                     {file.deletions > 0 && <em className="not-italic text-danger">-{file.deletions}</em>}
                   </span>
                 </button>
+                {secondaryLabel && secondaryIcon && onSecondary && (
+                  <IconBtn
+                    label={secondaryLabel}
+                    danger={secondaryDanger}
+                    disabled={busy}
+                    onClick={() => onSecondary(file)}
+                  >
+                    {secondaryIcon}
+                  </IconBtn>
+                )}
                 <IconBtn label={actionLabel} disabled={busy} onClick={() => onAction(file)}>
                   {actionIcon}
                 </IconBtn>

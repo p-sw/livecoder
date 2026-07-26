@@ -178,6 +178,26 @@ export class GitService {
     if (result.exitCode !== 0) throw new Error(formatGitError('unstage', result));
   }
 
+  // ponytail: unstaged-only discard. Tracked → restore worktree; untracked
+  // isn't known to restore, so clean -fd those paths.
+  async restore(workspace: string, paths: string[]): Promise<void> {
+    const cwd = await this.resolvePath(workspace);
+    if (paths.length === 0) return;
+    const listed = await runGit(['ls-files', '-z', '--', ...paths], cwd);
+    if (listed.exitCode !== 0) throw new Error(formatGitError('restore', listed));
+    const tracked = new Set(listed.stdout.split('\0').filter(Boolean));
+    const trackedPaths = paths.filter((p) => tracked.has(p));
+    const untrackedPaths = paths.filter((p) => !tracked.has(p));
+    if (trackedPaths.length > 0) {
+      const result = await runGit(['restore', '--', ...trackedPaths], cwd);
+      if (result.exitCode !== 0) throw new Error(formatGitError('restore', result));
+    }
+    if (untrackedPaths.length > 0) {
+      const result = await runGit(['clean', '-f', '-d', '--', ...untrackedPaths], cwd);
+      if (result.exitCode !== 0) throw new Error(formatGitError('restore', result));
+    }
+  }
+
   async commit(workspace: string, message: string, options: { all?: boolean } = {}): Promise<{ hash: string; short: string }> {
     const cwd = await this.resolvePath(workspace);
     if (!message.trim()) throw new Error('Commit message is required');

@@ -257,6 +257,8 @@ export const git = {
     request<void>('/api/git/stage', { method: 'POST', body: JSON.stringify({ workspace, paths }) }),
   unstage: (workspace: string, paths: string[]) =>
     request<void>('/api/git/unstage', { method: 'POST', body: JSON.stringify({ workspace, paths }) }),
+  restore: (workspace: string, paths: string[]) =>
+    request<void>('/api/git/restore', { method: 'POST', body: JSON.stringify({ workspace, paths }) }),
   commit: (workspace: string, message: string, all = false) =>
     request<{ hash: string; short: string }>('/api/git/commit', { method: 'POST', body: JSON.stringify({ workspace, message, all }) }),
   push: (workspace: string, options: { remote?: string; branch?: string; setUpstream?: boolean } = {}) =>

@@ -88,6 +88,13 @@ export class GitController {
     await this.git.unstage(body.workspace, body.paths ?? []);
   }
 
+  @Post('restore')
+  @HttpCode(204)
+  async restore(@Body() body: WorkspaceBody) {
+    requireWorkspace(body.workspace);
+    await this.git.restore(body.workspace, body.paths ?? []);
+  }
+
   @Post('commit')
   async commit(@Body() body: WorkspaceBody) {
     requireWorkspace(body.workspace);
