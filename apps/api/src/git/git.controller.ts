@@ -67,6 +67,13 @@ export class GitController {
     return this.git.diff(workspace, path, staged === 'true' || staged === '1');
   }
 
+  @Get('show')
+  async show(@Query('workspace') workspace: string, @Query('hash') hash: string) {
+    requireWorkspace(workspace);
+    if (!hash) throw new BadRequestException('A commit hash is required');
+    return this.git.show(workspace, hash);
+  }
+
   @Post('stage')
   @HttpCode(204)
   async stage(@Body() body: WorkspaceBody) {
@@ -139,9 +146,28 @@ export class GitController {
   }
 
   @Delete('tags/:name')
-  async deleteTag(@Param('name') name: string, @Query('workspace') workspace: string) {
+  async deleteTag(
+    @Param('name') name: string,
+    @Query('workspace') workspace: string,
+    @Query('remote') remote?: string,
+    @Query('remoteOnly') remoteOnly?: string,
+  ) {
     requireWorkspace(workspace);
-    return this.git.deleteTag(workspace, name);
+    if (remoteOnly === 'true' || remoteOnly === '1') {
+      return this.git.deleteRemoteTag(workspace, name, remote || 'origin');
+    }
+    const local = await this.git.deleteTag(workspace, name);
+    if (remote) await this.git.deleteRemoteTag(workspace, name, remote);
+    return local;
+  }
+
+  @Post('tags/:name/push')
+  async pushTag(
+    @Param('name') name: string,
+    @Body() body: WorkspaceBody,
+  ) {
+    requireWorkspace(body.workspace);
+    return this.git.pushTag(body.workspace, name, body.remote || 'origin');
   }
 
   @Get('remotes')

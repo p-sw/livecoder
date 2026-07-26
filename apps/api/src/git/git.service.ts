@@ -56,6 +56,7 @@ export interface DiffFileInfo {
   deletions: number;
   binary: boolean;
   diff: string;
+  staged: boolean;
 }
 
 export interface StatusInfo {
@@ -180,13 +181,30 @@ export class GitService {
   async commit(workspace: string, message: string, options: { all?: boolean } = {}): Promise<{ hash: string; short: string }> {
     const cwd = await this.resolvePath(workspace);
     if (!message.trim()) throw new Error('Commit message is required');
-    const args = ['commit', '-m', message];
-    if (options.all) args.push('-a');
+    // ponytail: default commits the index only so Stage/Unstage matter
+    const args = options.all ? ['commit', '-a', '-m', message] : ['commit', '-m', message];
     const result = await runGit(args, cwd);
     if (result.exitCode !== 0) throw new Error(formatGitError('commit', result));
     const head = await runGit(['rev-parse', 'HEAD'], cwd);
     const hash = head.stdout.trim();
     return { hash, short: hash.slice(0, 7) };
+  }
+
+  async show(workspace: string, hash: string): Promise<{ commit: CommitInfo; files: DiffFileInfo[] }> {
+    const cwd = await this.resolvePath(workspace);
+    const format = ['%H', '%h', '%an', '%ae', '%aI', '%s', '%b', '%D'].join('@LIVECODER@');
+    const meta = await runGit(['log', `-1`, `--pretty=format:${format}`, hash], cwd);
+    if (meta.exitCode !== 0) throw new Error(formatGitError('show', meta));
+    const [commit] = parseCommitList(meta.stdout);
+    if (!commit) throw new Error(`Unknown commit ${hash}`);
+    const stat = await runGit(['show', '--no-color', '--pretty=format:', '--numstat', hash], cwd);
+    if (stat.exitCode !== 0) throw new Error(formatGitError('show', stat));
+    const status = await runGit(['show', '--no-color', '--pretty=format:', '--name-status', '-z', hash], cwd);
+    if (status.exitCode !== 0) throw new Error(formatGitError('show', status));
+    const patch = await runGit(['show', '--no-color', '--pretty=format:', hash], cwd);
+    if (patch.exitCode !== 0) throw new Error(formatGitError('show', patch));
+    const files = parseDiff(status.stdout, stat.stdout, patch.stdout, []).map((f) => ({ ...f, staged: true }));
+    return { commit, files };
   }
 
   async push(workspace: string, options: { remote?: string; branch?: string; setUpstream?: boolean } = {}): Promise<GitResult> {
@@ -284,6 +302,20 @@ export class GitService {
     return result;
   }
 
+  async pushTag(workspace: string, name: string, remote = 'origin'): Promise<GitResult> {
+    const cwd = await this.resolvePath(workspace);
+    const result = await runGit(['push', remote, `refs/tags/${name}`], cwd, { timeoutMs: 10 * 60_000 });
+    if (result.exitCode !== 0) throw new Error(formatGitError('push tag', result));
+    return result;
+  }
+
+  async deleteRemoteTag(workspace: string, name: string, remote = 'origin'): Promise<GitResult> {
+    const cwd = await this.resolvePath(workspace);
+    const result = await runGit(['push', remote, '--delete', `refs/tags/${name}`], cwd, { timeoutMs: 10 * 60_000 });
+    if (result.exitCode !== 0) throw new Error(formatGitError('delete remote tag', result));
+    return result;
+  }
+
   async remotes(workspace: string): Promise<RemoteInfo[]> {
     const cwd = await this.resolvePath(workspace);
     const result = await runGit(['remote', '-v'], cwd);
@@ -341,9 +373,12 @@ export class GitService {
     const files: DiffFileInfo[] = [];
     for (const line of lines) {
       const code = line.slice(0, 2);
-      const path = line.slice(3);
-      const file = parseStatusCode(code, path);
-      if (file) files.push(file);
+      // rename/copy: "R  old -> new" / porcelain still uses " -> "
+      const rest = line.slice(3);
+      const arrow = rest.includes(' -> ') ? rest.split(' -> ') : null;
+      const path = arrow ? arrow[1] : rest;
+      const oldPath = arrow ? arrow[0] : undefined;
+      for (const file of parseStatusCode(code, path, oldPath)) files.push(file);
     }
     return this.annotateStats(files, cwd);
   }
@@ -353,32 +388,46 @@ export class GitService {
     if (result.exitCode !== 0) return [];
     return result.stdout.split('\0').filter(Boolean).map((path) => ({
       path,
-      status: 'untracked',
+      status: 'untracked' as const,
       additions: 0,
       deletions: 0,
       binary: false,
       diff: '',
+      staged: false,
     }));
   }
 
   private async annotateStats(files: DiffFileInfo[], cwd: string): Promise<DiffFileInfo[]> {
     if (files.length === 0) return files;
-    const args = ['diff', '--no-color', '--numstat', '--'];
-    const tracked = files.filter((f) => f.status !== 'untracked').map((f) => f.path);
-    if (tracked.length === 0) return files;
-    const result = await runGit([...args, ...tracked], cwd);
-    if (result.exitCode !== 0) return files;
+    const stagedPaths = files.filter((f) => f.staged && f.status !== 'untracked').map((f) => f.path);
+    const unstagedPaths = files.filter((f) => !f.staged && f.status !== 'untracked').map((f) => f.path);
     const stats = new Map<string, [number, number, boolean]>();
-    for (const line of result.stdout.split('\n').filter(Boolean)) {
-      const [a, b, path] = line.split('\t');
-      const additions = a === '-' ? 0 : Number(a);
-      const deletions = b === '-' ? 0 : Number(b);
-      const binary = a === '-' && b === '-';
-      stats.set(path, [additions, deletions, binary]);
-    }
+
+    const load = async (cached: boolean, paths: string[]) => {
+      if (paths.length === 0) return;
+      const args = ['diff', '--no-color', '--numstat'];
+      if (cached) args.push('--cached');
+      args.push('--', ...paths);
+      const result = await runGit(args, cwd);
+      if (result.exitCode !== 0) return;
+      for (const line of result.stdout.split('\n').filter(Boolean)) {
+        const parts = line.split('\t');
+        if (parts.length < 3) continue;
+        const [a, b] = parts;
+        const path = parts.slice(2).join('\t');
+        const additions = a === '-' ? 0 : Number(a);
+        const deletions = b === '-' ? 0 : Number(b);
+        const binary = a === '-' && b === '-';
+        stats.set(`${cached ? 'S' : 'U'}:${path}`, [additions, deletions, binary]);
+      }
+    };
+
+    await Promise.all([load(true, stagedPaths), load(false, unstagedPaths)]);
+
     return files.map((file) => {
       if (file.status === 'untracked') return file;
-      const stat = stats.get(file.path) ?? stats.get(file.oldPath ?? '');
+      const key = `${file.staged ? 'S' : 'U'}:${file.path}`;
+      const stat = stats.get(key) ?? stats.get(`${file.staged ? 'S' : 'U'}:${file.oldPath ?? ''}`);
       if (!stat) return file;
       const [additions, deletions, binary] = stat;
       return { ...file, additions, deletions, binary };
@@ -386,21 +435,37 @@ export class GitService {
   }
 }
 
-function parseStatusCode(code: string, path: string): DiffFileInfo | null {
-  const x = code[0];
-  const y = code[1];
-  const status = ((): DiffFileInfo['status'] => {
-    if (x === '?' && y === '?') return 'untracked';
-    if (x === 'A' || y === 'A') return 'added';
-    if (x === 'D' || y === 'D') return 'deleted';
-    if (x === 'M' || y === 'M') return 'modified';
-    if (x === 'R' || y === 'R') return 'renamed';
-    if (x === 'C' || y === 'C') return 'copied';
-    if (x === 'T' || y === 'T') return 'typechange';
-    return 'modified';
-  })();
-  if (x === '?' && y === '?') return { path, status, additions: 0, deletions: 0, binary: false, diff: '' };
-  return { path, status, additions: 0, deletions: 0, binary: false, diff: '' };
+function letterStatus(letter: string): DiffFileInfo['status'] | null {
+  if (letter === 'A') return 'added';
+  if (letter === 'D') return 'deleted';
+  if (letter === 'M') return 'modified';
+  if (letter === 'R') return 'renamed';
+  if (letter === 'C') return 'copied';
+  if (letter === 'T') return 'typechange';
+  return null;
+}
+
+function parseStatusCode(code: string, path: string, oldPath?: string): DiffFileInfo[] {
+  const x = code[0] ?? ' ';
+  const y = code[1] ?? ' ';
+  if (x === '?' && y === '?') {
+    return [{ path, status: 'untracked', additions: 0, deletions: 0, binary: false, diff: '', staged: false }];
+  }
+  if (x === '!' && y === '!') return [];
+
+  const out: DiffFileInfo[] = [];
+  const base = { path, oldPath, additions: 0, deletions: 0, binary: false, diff: '' };
+  // index (staged)
+  if (x !== ' ' && x !== '?') {
+    const status = letterStatus(x) ?? 'modified';
+    out.push({ ...base, status, staged: true });
+  }
+  // worktree (unstaged)
+  if (y !== ' ' && y !== '?') {
+    const status = letterStatus(y) ?? 'modified';
+    out.push({ ...base, status, staged: false });
+  }
+  return out;
 }
 
 function parseCommitList(output: string): CommitInfo[] {
@@ -452,9 +517,11 @@ function parseDiff(statusOut: string, numstatOut: string, patchOut: string, untr
       if (kind === 'D') return 'deleted';
       if (kind === 'M') return 'modified';
       if (kind === 'T') return 'typechange';
+      if (kind === 'R') return 'renamed';
+      if (kind === 'C') return 'copied';
       return 'modified';
     })();
-    files.push({ path, status, additions: stat.additions, deletions: stat.deletions, binary: stat.binary, diff: '' });
+    files.push({ path, status, additions: stat.additions, deletions: stat.deletions, binary: stat.binary, diff: '', staged: false });
   }
 
   // ponytail: split the patch output by `diff --git` headers so each file
