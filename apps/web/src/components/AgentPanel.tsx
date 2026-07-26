@@ -87,7 +87,7 @@ export function AgentPanel() {
             size="icon"
             onClick={() => {
               setSessionsOpen(true);
-              void store.openLastAgentSession();
+              void store.refreshAgentSessions();
             }}
             disabled={agentBusy}
             aria-label="Sessions"
@@ -122,7 +122,7 @@ export function AgentPanel() {
             type="button"
             onClick={() => {
               setSessionsOpen(true);
-              void store.openLastAgentSession();
+              void store.refreshAgentSessions();
             }}
             className="shrink-0 max-w-[40%] truncate px-1.5 py-0.5 border border-border rounded bg-bg/60 text-muted font-mono text-[10px]"
             title={activeSessionId}
@@ -134,7 +134,7 @@ export function AgentPanel() {
       </div>
 
       <div ref={messagesRef} className="ui-scroll-area flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden">
-        <div className="flex flex-col gap-2 px-3 pt-2 pb-4 min-w-0" aria-live="polite">
+        <div className="flex flex-col gap-3.5 px-3 pt-2 pb-4 min-w-0" aria-live="polite">
           {agentConfigured === false && (
             <div className="flex items-start gap-2 px-3 py-2.5 border border-blue/15 rounded-md bg-blue/[0.04] text-[12px] text-blue min-w-0">
               <Terminal size={15} className="mt-0.5 shrink-0" />
@@ -314,7 +314,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 
   if (message.role === 'tool') {
     return (
-      <div className="flex flex-col gap-1 px-2 py-1 border border-border rounded-md bg-surface text-[11px] min-w-0 max-w-full">
+      <div className="flex flex-col gap-1 px-2.5 py-1.5 border border-border rounded-md bg-surface text-[12px] leading-[1.55] min-w-0 max-w-full">
         <div className="flex items-center gap-1.5 min-w-0">
           <div className="w-4 h-4 grid place-items-center rounded text-muted bg-bg/50 shrink-0">
             <Terminal size={11} />
@@ -328,7 +328,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           </span>
         </div>
         {message.toolDetail ? (
-          <pre className="m-0 max-h-28 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded bg-bg/50 px-1.5 py-1 font-mono text-[10px] leading-[1.35] text-muted">
+          <pre className="m-0 max-h-28 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded bg-bg/50 px-1.5 py-1 font-mono text-[11px] leading-[1.5] text-muted">
             {message.toolDetail}
           </pre>
         ) : null}
@@ -337,7 +337,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   }
   if (message.role === 'thought') {
     return (
-      <div className="flex flex-col gap-1 px-2 py-1 border border-dashed border-border/80 rounded-md bg-bg/40 text-[11px] min-w-0 max-w-full text-muted">
+      <div className="flex flex-col gap-1 px-2.5 py-1.5 border border-dashed border-border/80 rounded-md bg-bg/40 text-[12px] leading-[1.55] min-w-0 max-w-full text-muted">
         <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-[0.05em] text-subtle">
           <Brain size={10} />
           Thinking
@@ -357,7 +357,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   return (
     <div className={cn('flex items-start min-w-0 max-w-full', message.role === 'user' && 'justify-end')}>
       <div className={cn(
-        'max-w-[min(85%,100%)] min-w-0 px-2.5 py-1.5 rounded-xl text-[12px] leading-[1.4]',
+        'max-w-[min(85%,100%)] min-w-0 px-3 py-2 rounded-xl text-[13px] leading-[1.6]',
         message.role === 'user'
           ? 'bg-accent text-fg-on-accent rounded-br-sm'
           : 'bg-surface border border-border text-fg rounded-bl-sm',

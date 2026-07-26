@@ -48,7 +48,7 @@ function AppShell() {
   return (
     <div
       className={
-        'w-full h-[100dvh] min-h-[480px] flex flex-col overflow-hidden ' +
+        'w-full h-[100dvh] min-h-[480px] flex flex-col overflow-hidden pb-[60px] md:pb-0 ' +
         (workspace ? 'bg-bg' : 'bg-empty-bg')
       }
     >
@@ -59,11 +59,7 @@ function AppShell() {
         onSelect={(path) => void openFolder(path)}
       />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <Outlet />
-        </div>
-        {/* ponytail: spacer keeps scroll/layout above fixed mobile nav */}
-        <div className="h-[59px] shrink-0 md:hidden" aria-hidden="true" />
+        <Outlet />
       </div>
       <MobileNav />
       <Suspense fallback={null}>
@@ -90,7 +86,7 @@ function TopBar({
   onSelect: (path: string) => void;
 }) {
   return (
-    <header className="relative z-[3] h-[62px] shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-[18px] border-b border-border bg-topbar">
+    <header className="relative z-[3] h-[calc(62px+env(safe-area-inset-top))] pt-[env(safe-area-inset-top)] shrink-0 grid grid-cols-[1fr_auto_1fr] items-center px-[18px] border-b border-border bg-topbar">
       <div className="flex items-center gap-[9px] min-w-0">
         <div className="w-[29px] h-[29px] grid place-items-center border border-accent/40 rounded-lg text-accent bg-accent-dim shadow-[inset_0_0_18px_rgba(141,244,187,0.06)]">
           <Code2 size={18} strokeWidth={2.5} />
@@ -170,7 +166,7 @@ function MobileNav() {
   ];
 
   return (
-    <nav className="md:hidden fixed bottom-0 inset-x-0 z-[4] h-[59px] flex items-stretch justify-around border-t border-border bg-mobile-nav pb-[env(safe-area-inset-bottom)]">
+    <nav className="md:hidden fixed bottom-0 inset-x-0 z-[4] h-[60px] flex items-stretch justify-around border-t border-border bg-mobile-nav">
       {tabs.map((tab) => {
         // ponytail: Settings stays reachable even without an open workspace
         // so the user can fix a misconfigured path without first opening

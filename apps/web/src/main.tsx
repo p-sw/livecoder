@@ -7,6 +7,8 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';
 import { routeTree } from './routeTree.gen';
 import './styles.css';
+import { ensurePushSubscription, registerServiceWorker } from './lib/notifications';
+
 
 const router = createRouter({
   routeTree,
@@ -26,3 +28,9 @@ createRoot(root).render(
     <RouterProvider router={router} />
   </StrictMode>,
 );
+
+// ponytail: SW + push subscription. Permission prompt only fires once the
+// browser allows it (user gesture not required after first grant).
+void registerServiceWorker().then(() => {
+  void ensurePushSubscription();
+});

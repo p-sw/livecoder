@@ -29,6 +29,8 @@ import {
   type SessionInfo,
   type WorkspaceResult,
 } from './api';
+import { ensurePushSubscription } from './lib/notifications';
+
 
 
 // ponytail: recent workspaces are just path+name in localStorage — no server.
@@ -575,6 +577,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     ]);
     setAgentBusy(true);
     setAgentConnection('connecting');
+    // Arm push while the gesture is fresh so closed-tab finish still notifies.
+    void ensurePushSubscription();
+
     const cursor = newBubbleCursor();
     let sessionId = activeSessionId ?? undefined;
     const handleEvent = (event: AgentEvent) => {
@@ -610,6 +615,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     } finally {
       setChatMessages((current) => finishActiveBubble(current, cursor));
       setAgentBusy(false);
+      // ponytail: finish ping is backend web-push (works after tab close/unfocus).
     }
   }, [agentBusy, chatInput, selectedFile, workspace, activeSessionId, refreshAgentSessions, reattachAgent]);
 
