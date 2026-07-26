@@ -148,7 +148,7 @@ export function SettingsPanel() {
                 <span>Default adapter</span>
               </div>
               <p className="m-0 mt-1 mb-1 text-muted text-[11px] leading-[1.5]">
-                Which agent the chat opens with. The picker in the agent panel overrides this per session.
+                Which ACP adapter the agent uses. Change takes effect on the next chat session.
               </p>
               <p className="m-0 text-subtle font-mono text-[10px]">
                 Current: <strong className="text-fg font-medium">{current.defaultAdapterId ?? <em className="not-italic text-muted">unset</em>}</strong>
