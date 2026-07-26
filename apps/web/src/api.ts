@@ -92,33 +92,38 @@ export interface AgentStatus {
   defaultAdapter: string;
   defaultAdapterSource: 'settings' | 'env' | 'builtin';
   adapters: AdapterInfo[];
+  activeSessionId: string | null;
+  capabilities: {
+    loadSession: boolean;
+    listSessions: boolean;
+    closeSession: boolean;
+    deleteSession: boolean;
+  };
 }
 
-export function agentStatus(adapter?: string) {
-  const query = adapter ? `?adapter=${encodeURIComponent(adapter)}` : '';
-  return request<AgentStatus>(`/api/agent/status${query}`);
+export interface SessionInfo {
+  sessionId: string;
+  cwd?: string;
+  title?: string;
+  updatedAt?: string;
+  active: boolean;
+}
+
+export function agentStatus() {
+  return request<AgentStatus>('/api/agent/status');
 }
 
 export type AgentEvent =
   | { type: 'status'; status: string; message?: string }
-  | { type: 'text'; text: string }
-  | { type: 'thought'; text: string }
-  | { type: 'tool'; id: string; title: string; status?: string; kind?: string }
+  | { type: 'text'; text: string; messageId?: string }
+  | { type: 'thought'; text: string; messageId?: string }
+  | { type: 'tool'; id: string; title?: string; status?: string; kind?: string; detail?: string }
+  | { type: 'history'; role: 'user'; text: string }
+  | { type: 'session'; sessionId: string }
   | { type: 'error'; message: string }
   | { type: 'done'; stopReason?: string };
 
-export async function streamAgentMessage(
-  workspace: string,
-  text: string,
-  onEvent: (event: AgentEvent) => void,
-  adapter?: string,
-): Promise<void> {
-  const query = adapter ? `?adapter=${encodeURIComponent(adapter)}` : '';
-  const response = await fetch(`${API_ROOT}/api/agent/message${query}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ workspace, text }),
-  });
+async function readSse(response: Response, onEvent: (event: AgentEvent) => void): Promise<void> {
   if (!response.ok) {
     let message = response.statusText;
     try {
@@ -151,6 +156,53 @@ export async function streamAgentMessage(
     if (done) break;
   }
 }
+
+export async function streamAgentMessage(
+  workspace: string,
+  text: string,
+  onEvent: (event: AgentEvent) => void,
+  sessionId?: string,
+): Promise<void> {
+  const response = await fetch(`${API_ROOT}/api/agent/message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ workspace, text, sessionId }),
+  });
+  await readSse(response, onEvent);
+}
+
+export const agentSessions = {
+  list: (workspace: string) =>
+    request<{ sessions: SessionInfo[]; activeSessionId: string | null; adapter: string }>(
+      `/api/agent/sessions?workspace=${encodeURIComponent(workspace)}`,
+    ),
+  create: async (workspace: string, onEvent: (event: AgentEvent) => void) => {
+    const response = await fetch(`${API_ROOT}/api/agent/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ workspace }),
+    });
+    await readSse(response, onEvent);
+  },
+  load: async (workspace: string, sessionId: string, onEvent: (event: AgentEvent) => void) => {
+    const response = await fetch(`${API_ROOT}/api/agent/sessions/load`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ workspace, sessionId }),
+    });
+    await readSse(response, onEvent);
+  },
+  close: (workspace: string, sessionId: string) =>
+    request<{ ok: boolean }>('/api/agent/sessions/close', {
+      method: 'POST',
+      body: JSON.stringify({ workspace, sessionId }),
+    }),
+  cancel: (workspace: string, sessionId?: string) =>
+    request<{ ok: boolean }>('/api/agent/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ workspace, sessionId }),
+    }),
+};
 
 // ---------- Git API ----------
 
