@@ -44,7 +44,11 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     }
     throw new Error(message);
   }
-  return response.json() as Promise<T>;
+  // ponytail: 204 / empty bodies (stage, unstage) aren't JSON
+  if (response.status === 204) return undefined as T;
+  const text = await response.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export function browse(path?: string) {
@@ -218,6 +222,7 @@ export interface GitDiffFile {
   status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'typechange';
   oldPath?: string;
   additions: number; deletions: number; binary: boolean; diff: string;
+  staged: boolean;
 }
 export interface GitStatus {
   branch: string;
@@ -246,6 +251,8 @@ export const git = {
     if (staged) params.set('staged', 'true');
     return request<GitDiffFile[]>(`/api/git/diff?${params.toString()}`);
   },
+  show: (workspace: string, hash: string) =>
+    request<{ commit: GitCommitInfo; files: GitDiffFile[] }>(`/api/git/show?workspace=${encodeURIComponent(workspace)}&hash=${encodeURIComponent(hash)}`),
   stage: (workspace: string, paths: string[]) =>
     request<void>('/api/git/stage', { method: 'POST', body: JSON.stringify({ workspace, paths }) }),
   unstage: (workspace: string, paths: string[]) =>
@@ -271,8 +278,14 @@ export const git = {
     request<GitTagInfo[]>(`/api/git/tags?workspace=${encodeURIComponent(workspace)}`),
   createTag: (workspace: string, name: string, message?: string) =>
     request<{ stdout: string; stderr: string; exitCode: number }>('/api/git/tags', { method: 'PUT', body: JSON.stringify({ workspace, name, message }) }),
-  deleteTag: (workspace: string, name: string) =>
-    request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/tags/${encodeURIComponent(name)}?workspace=${encodeURIComponent(workspace)}`, { method: 'DELETE' }),
+  deleteTag: (workspace: string, name: string, options: { remote?: string; remoteOnly?: boolean } = {}) => {
+    const params = new URLSearchParams({ workspace });
+    if (options.remote) params.set('remote', options.remote);
+    if (options.remoteOnly) params.set('remoteOnly', 'true');
+    return request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/tags/${encodeURIComponent(name)}?${params.toString()}`, { method: 'DELETE' });
+  },
+  pushTag: (workspace: string, name: string, remote = 'origin') =>
+    request<{ stdout: string; stderr: string; exitCode: number }>(`/api/git/tags/${encodeURIComponent(name)}/push`, { method: 'POST', body: JSON.stringify({ workspace, remote }) }),
   remotes: (workspace: string) =>
     request<GitRemoteInfo[]>(`/api/git/remotes?workspace=${encodeURIComponent(workspace)}`),
   addRemote: (workspace: string, name: string, url: string) =>
