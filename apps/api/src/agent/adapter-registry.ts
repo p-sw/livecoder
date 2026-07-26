@@ -47,7 +47,8 @@ function envOverrideSpecs(): AdapterSpec[] {
   const specs: AdapterSpec[] = [];
   for (const [key, value] of Object.entries(process.env)) {
     const match = key.match(/^PI_ADAPTER_([A-Z][A-Z0-9_]*)(_ARGS)?$/);
-    if (!match || !value) continue;
+    // ponytail: PI_ADAPTER_DEFAULT is the default-id knob, not a command override.
+    if (!match || !value || match[1] === 'DEFAULT') continue;
     const id = match[1].toLowerCase().replace(/_/g, '-');
     const isArgs = Boolean(match[2]);
     const existing = specs.find((s) => s.id === id);
@@ -134,9 +135,13 @@ export function resolveAdapterCommand(adapter: AdapterSpec): { command: string; 
 function localBin(binary: string): string | null {
   const suffix = process.platform === 'win32' ? '.cmd' : '';
   const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  // ponytail: bun workspaces put bins under the package (apps/api/node_modules/.bin),
+  // not always the monorepo root. Walk a few likely parents.
   const candidates = [
     join(process.cwd(), 'node_modules', '.bin', `${binary}${suffix}`),
+    join(process.cwd(), '..', 'node_modules', '.bin', `${binary}${suffix}`),
     join(process.cwd(), '..', '..', 'node_modules', '.bin', `${binary}${suffix}`),
+    join(moduleDirectory, '..', '..', '..', 'node_modules', '.bin', `${binary}${suffix}`),
     join(moduleDirectory, '..', '..', '..', '..', 'node_modules', '.bin', `${binary}${suffix}`),
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
