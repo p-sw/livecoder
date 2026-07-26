@@ -14,6 +14,8 @@ import {
   resolveAdapterCommand,
   type AdapterSpec,
 } from './adapter-registry.js';
+import { notifyAll } from '../push/push-store.js';
+
 export type AgentEvent =
   | { type: 'status'; status: 'connecting' | 'ready' | 'thinking' | 'complete'; message?: string }
   | { type: 'text'; text: string; messageId?: string }
@@ -70,8 +72,17 @@ export class AgentService implements OnModuleDestroy {
   private readonly runtimes = new Map<string, Promise<AcpRuntime>>();
 
   async prompt(workspace: string, text: string, emit: Emit, sessionId?: string): Promise<void> {
-    const runtime = await this.getRuntime(workspace, emit);
-    await runtime.prompt(text, emit, sessionId);
+    try {
+      const runtime = await this.getRuntime(workspace, emit);
+      await runtime.prompt(text, emit, sessionId);
+      // ponytail: ?workspace= so notification click restores the same folder
+      const agentUrl = `/agent?workspace=${encodeURIComponent(workspace)}`;
+      void notifyAll({ title: 'livecoder', body: 'Agent finished', url: agentUrl });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      void notifyAll({ title: 'livecoder', body: `Agent error: ${message}`, url: `/agent?workspace=${encodeURIComponent(workspace)}` });
+      throw error;
+    }
   }
 
   async listSessions(workspace: string): Promise<{ sessions: SessionInfo[]; activeSessionId: string | null; busySessionId: string | null; adapter: string }> {
