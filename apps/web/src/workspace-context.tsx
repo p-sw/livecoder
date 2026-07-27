@@ -206,6 +206,7 @@ export interface WorkspaceStore {
   activeSessionId: string | null;
   setChatInput: (value: string) => void;
   sendChat: (value?: string) => Promise<void>;
+  stopAgent: () => Promise<void>;
   newAgentSession: () => Promise<void>;
   loadAgentSession: (sessionId: string) => Promise<void>;
   openLastAgentSession: () => Promise<void>;
@@ -240,6 +241,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const selectedRef = useRef<FileEntry | null>(null);
   const dirtyRef = useRef(false);
   const activeSessionIdRef = useRef<string | null>(null);
+  const chatInflight = useRef(0);
 
 
   useEffect(() => { selectedRef.current = selectedFile; }, [selectedFile]);
@@ -569,19 +571,21 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const sendChat = useCallback(async (value?: string) => {
     const text = (value ?? chatInput).trim();
-    if (!text || agentBusy || !workspace) return;
+    // ponytail: allow send while busy — ACP queues the next prompt (steer).
+    if (!text || !workspace) return;
     setChatInput('');
     setChatMessages((current) => [
       ...current,
       { id: `user-${Date.now()}`, role: 'user', text },
     ]);
+    chatInflight.current += 1;
     setAgentBusy(true);
-    setAgentConnection('connecting');
+    if (chatInflight.current === 1) setAgentConnection('connecting');
     // Arm push while the gesture is fresh so closed-tab finish still notifies.
     void ensurePushSubscription();
 
     const cursor = newBubbleCursor();
-    let sessionId = activeSessionId ?? undefined;
+    let sessionId = activeSessionIdRef.current ?? undefined;
     const handleEvent = (event: AgentEvent) => {
       if (event.type === 'status') {
         setAgentConnection(event.status === 'thinking' ? 'thinking' : event.status === 'connecting' ? 'connecting' : 'ready');
@@ -596,7 +600,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     try {
       const context = selectedFile ? `\n\nThe user is currently viewing ${relativePath(selectedFile.path, workspace.path)}.` : '';
       try {
-        await streamAgentMessage(workspace.path, `${text}${context}`, handleEvent, activeSessionId ?? undefined);
+        await streamAgentMessage(workspace.path, `${text}${context}`, handleEvent, sessionId);
       } catch (error) {
         if (!isTransportError(error)) throw error;
         // Stream died (unfocus/close). Server keeps running — reattach, don't error.
@@ -614,10 +618,21 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setAgentConnection('error');
     } finally {
       setChatMessages((current) => finishActiveBubble(current, cursor));
-      setAgentBusy(false);
+      chatInflight.current = Math.max(0, chatInflight.current - 1);
+      if (chatInflight.current === 0) setAgentBusy(false);
       // ponytail: finish ping is backend web-push (works after tab close/unfocus).
     }
-  }, [agentBusy, chatInput, selectedFile, workspace, activeSessionId, refreshAgentSessions, reattachAgent]);
+  }, [chatInput, selectedFile, workspace, refreshAgentSessions, reattachAgent]);
+
+  // ponytail: ACP session/cancel — agent ends the turn with stopReason cancelled.
+  const stopAgent = useCallback(async () => {
+    if (!workspace || chatInflight.current === 0) return;
+    try {
+      await agentSessions.cancel(workspace.path, activeSessionIdRef.current ?? undefined);
+    } catch {
+      // best-effort
+    }
+  }, [workspace]);
 
   const newAgentSession = useCallback(async () => {
     if (!workspace || agentBusy) return;
@@ -770,6 +785,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     activeSessionId,
     setChatInput,
     sendChat,
+    stopAgent,
     newAgentSession,
     loadAgentSession,
     openLastAgentSession,

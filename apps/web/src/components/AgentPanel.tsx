@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, ArrowUp, Bot, Brain, History, MessageSquarePlus, Send, Sparkles, Terminal, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArrowUp, Bot, Brain, History, MessageSquarePlus, Send, Sparkles, Square, Terminal, Trash2 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
   Drawer,
@@ -54,9 +54,11 @@ export function AgentPanel() {
 
   const statusLabel = agentConnection === 'thinking' ? 'working' : agentConnection === 'connecting' ? 'connecting' : agentConnection === 'error' ? 'offline' : agentConnection === 'idle' ? 'standby' : 'ready';
   const submit = (event: FormEvent) => { event.preventDefault(); void store.sendChat(); };
+  // ponytail: Enter = newline; ⌘/Ctrl+Enter sends (steer works while busy via ACP queue).
   const handleKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault(); void store.sendChat();
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void store.sendChat();
     }
   };
   const statusTone = agentConnection === 'error'
@@ -178,23 +180,28 @@ export function AgentPanel() {
             </button>
           </div>
         )}
-        <form onSubmit={submit} className="flex items-center gap-1.5 mb-1 min-w-0">
+        <form onSubmit={submit} className="flex items-end gap-1.5 mb-1 min-w-0">
           <textarea
             value={chatInput}
             onChange={(event) => store.setChatInput(event.target.value)}
             onKeyDown={handleKey}
-            placeholder="Ask the agent anything…"
+            placeholder={agentBusy ? 'Steer the agent…' : 'Ask the agent anything…'}
             rows={1}
             aria-label="Message agent"
             className="flex-1 min-w-0 min-h-9 max-h-40 px-3 py-2 border border-border rounded-md bg-bg text-fg text-[13px] resize-none outline-none focus:border-accent/55 focus:shadow-[0_0_0_3px_rgba(141,244,189,0.08)] placeholder:text-subtle"
           />
-          <Button type="submit" size="icon" disabled={!chatInput.trim() || agentBusy} aria-label="Send message" className="shrink-0">
+          {agentBusy ? (
+            <Button type="button" size="icon" variant="ghost" onClick={() => void store.stopAgent()} aria-label="Stop agent" title="Stop" className="shrink-0 text-danger hover:text-danger">
+              <Square size={14} fill="currentColor" />
+            </Button>
+          ) : null}
+          <Button type="submit" size="icon" disabled={!chatInput.trim()} aria-label="Send message" className="shrink-0">
             <Send size={16} />
           </Button>
         </form>
         <div className="flex items-center justify-between gap-2 text-subtle text-[9px] font-mono min-w-0">
           <span className="min-w-0 truncate">Agent can read and edit files in this workspace</span>
-          <span className="shrink-0"><kbd className="px-1 py-0.5 text-[10px] font-mono text-fg bg-bg border border-border rounded">↵</kbd> send</span>
+          <span className="shrink-0"><kbd className="px-1 py-0.5 text-[10px] font-mono text-fg bg-bg border border-border rounded">⌘↵</kbd> send</span>
         </div>
       </div>
 
