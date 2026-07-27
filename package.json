@@ -13,6 +13,7 @@
     "dev:web": "bun --cwd apps/web dev",
     "build": "bun --cwd apps/web build",
     "start": "bun --cwd apps/api src/main.ts",
+    "apk": "bun scripts/apk.ts",
     "test": "bun run build"
   },
   "devDependencies": {
