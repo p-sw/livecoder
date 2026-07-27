@@ -19,6 +19,8 @@ const apiDirectory = dirname(fileURLToPath(import.meta.url));
     ServeStaticModule.forRoot({
       rootPath: join(apiDirectory, '../../web/dist'),
       exclude: ['/api/{*splat}'],
+      // ponytail: assetlinks.json lives under .well-known; default is ignore dotfiles
+      serveStaticOptions: { dotfiles: 'allow', index: false },
     }),
   ],
   controllers: [AppController, WorkspaceController, AgentController, GitController, SettingsController, PushController],

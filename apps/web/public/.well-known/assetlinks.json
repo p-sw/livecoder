@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "kr.psw.livecoder",
+        "sha256_cert_fingerprints": ["A9:C0:3F:65:D2:5C:E4:35:D6:EF:5F:DE:C8:72:B7:D1:04:9E:2F:02:F4:E3:83:ED:AD:73:66:3E:8A:02:BA:0D"]
+      }
+    }]

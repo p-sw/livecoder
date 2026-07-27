@@ -198,6 +198,15 @@ async function main() {
   await writeFile(zipPath, zipBytes);
   await extractZip(zipPath, OUT);
 
+  // TWA needs this at /.well-known/assetlinks.json (real JSON, not SPA fallback).
+  const assetlinks = join(OUT, 'assetlinks.json');
+  if (existsSync(assetlinks)) {
+    const destDir = join('apps/web/public/.well-known');
+    await mkdir(destDir, { recursive: true });
+    await writeFile(join(destDir, 'assetlinks.json'), await readFile(assetlinks));
+    console.log(`synced ${destDir}/assetlinks.json`);
+  }
+
   // drop stale nested extract dir from the first manual build if present
   if (existsSync(join(OUT, 'out'))) {
     await rm(join(OUT, 'out'), { recursive: true, force: true });
