@@ -4,12 +4,13 @@
 // `bg-bg` (workspace-shell) so the empty-state background gradient
 // stays under the fold.
 
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useSyncExternalStore } from 'react';
 import { Outlet, Link, useRouterState } from '@tanstack/react-router';
 import { routeWithWorkspace } from './router';
 import {
   ChevronDown,
   Code2,
+  Download,
   FolderOpen,
   FolderPlus,
   GitBranch,
@@ -29,6 +30,7 @@ import {
   DropdownMenuTrigger,
 } from './components/ui/dropdown-menu';
 import { WorkspaceProvider, useWorkspaceStore } from './workspace-context';
+import { canPromptInstall, promptInstall, subscribeInstallAvailability } from './lib/pwa-install';
 
 const WorkspacePicker = lazy(() =>
   import('./components/WorkspacePicker').then((m) => ({ default: m.WorkspacePicker })),
@@ -199,6 +201,7 @@ function MobileNav() {
 // makes the call feel intentional on a fresh load.
 export function EmptyState() {
   const { setPickerOpen } = useWorkspaceStore();
+  const canPrompt = useSyncExternalStore(subscribeInstallAvailability, canPromptInstall, () => false);
   return (
     <main className="relative isolate flex-1 grid place-items-center overflow-hidden py-[42px] px-5">
       <div
@@ -229,9 +232,23 @@ export function EmptyState() {
         <p className="max-w-[365px] mt-[19px] mb-[26px] text-muted text-sm leading-[1.65]">
           Work with the files on this machine, then ask Pi to inspect, explain, or edit them with you.
         </p>
-        <Button size="lg" className="min-w-[190px]" onClick={() => setPickerOpen(true)}>
-          <FolderOpen size={18} /> Choose a folder <span className="ml-1 text-lg leading-none">↗</span>
-        </Button>
+        <div className="flex flex-col sm:flex-row items-center gap-2">
+          <Button size="lg" className="min-w-[190px]" onClick={() => setPickerOpen(true)}>
+            <FolderOpen size={18} /> Choose a folder <span className="ml-1 text-lg leading-none">↗</span>
+          </Button>
+          {canPrompt ? (
+            <Button
+              size="lg"
+              variant="outline"
+              className="min-w-[190px]"
+              onClick={() => {
+                void promptInstall();
+              }}
+            >
+              <Download size={18} /> Install app
+            </Button>
+          ) : null}
+        </div>
         <div className="flex items-center gap-2 mt-4 text-subtle text-[11px]">
           <span className="w-1.5 h-1.5 rounded-full bg-accent" />
           <span>Local files, no account required</span>
